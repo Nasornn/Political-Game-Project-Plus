@@ -1,0 +1,59 @@
+{
+  "name": "Urban Reform Wave",
+  "description": "A reform-heavy cycle with strong city momentum and expanded campaign resources.",
+  "baseMode": "realistic",
+  "campaign": {
+    "maxTurns": 10,
+    "apPerTurn": 12,
+    "emergentPartyChance": 0.12
+  },
+  "partyOverrides": [
+    {
+      "id": "progressive",
+      "basePopularity": 36,
+      "politicalCapital": 240,
+      "regionalPopMod": {
+        "Bangkok": 20,
+        "Central": 6,
+        "North": 0
+      }
+    },
+    {
+      "id": "pheuthai",
+      "basePopularity": 17,
+      "greyMoney": 120,
+      "regionalPopMod": {
+        "Northeast": 10,
+        "North": 8
+      }
+    },
+    {
+      "id": "unitedthai",
+      "basePopularity": 9,
+      "regionalPopMod": {
+        "Bangkok": 2,
+        "South": 1
+      }
+    }
+  ],
+  "customParties": [
+    {
+      "id": "metro_liberal",
+      "name": "Metro Liberal Front",
+      "thaiName": "แนวร่วมเสรีเมือง",
+      "shortName": "MLF",
+      "hexColor": "#7C3AED",
+      "basePopularity": 5,
+      "banYaiPower": 8,
+      "ideology": 20,
+      "politicalCapital": 190,
+      "greyMoney": 10,
+      "regionalPopMod": {
+        "Bangkok": 5,
+        "Central": 2,
+        "North": 1
+      },
+      "description": "A youth-backed urban policy movement focused on transport and civil rights."
+    }
+  ]
+}

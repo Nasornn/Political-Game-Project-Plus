@@ -1,0 +1,70 @@
+{
+  "name": "Fragmented House",
+  "description": "National brands weaken, coalitions fragment, and no bloc can dominate easily.",
+  "baseMode": "balanced",
+  "campaign": {
+    "maxTurns": 9,
+    "apPerTurn": 9,
+    "emergentPartyChance": 0.28
+  },
+  "partyOverrides": [
+    {
+      "id": "progressive",
+      "basePopularity": 12,
+      "politicalCapital": 180
+    },
+    {
+      "id": "pheuthai",
+      "basePopularity": 12,
+      "politicalCapital": 180
+    },
+    {
+      "id": "bhumjaithai",
+      "basePopularity": 12,
+      "politicalCapital": 180
+    },
+    {
+      "id": "unitedthai",
+      "basePopularity": 12,
+      "politicalCapital": 180
+    }
+  ],
+  "customParties": [
+    {
+      "id": "technocrat_alliance",
+      "name": "Technocrat Alliance",
+      "thaiName": "พันธมิตรเทคโนแครต",
+      "shortName": "TCA",
+      "hexColor": "#0EA5E9",
+      "basePopularity": 8,
+      "banYaiPower": 12,
+      "ideology": 45,
+      "politicalCapital": 190,
+      "greyMoney": 20,
+      "regionalPopMod": {
+        "Bangkok": 3,
+        "East": 2,
+        "Central": 1
+      },
+      "description": "Policy-first technocrats competing in metropolitan and industrial seats."
+    },
+    {
+      "id": "farmers_front",
+      "name": "Farmers Front",
+      "thaiName": "แนวร่วมเกษตรกร",
+      "shortName": "FRM",
+      "hexColor": "#65A30D",
+      "basePopularity": 8,
+      "banYaiPower": 16,
+      "ideology": 34,
+      "politicalCapital": 180,
+      "greyMoney": 25,
+      "regionalPopMod": {
+        "Northeast": 4,
+        "North": 3,
+        "Central": 2
+      },
+      "description": "Rural coalition focused on income guarantees and water policy."
+    }
+  ]
+}

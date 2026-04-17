@@ -1,0 +1,32 @@
+{
+  "packs": [
+    {
+      "id": "urban_reform_wave",
+      "name": "Urban Reform Wave",
+      "description": "Boosts urban-progressive momentum and faster campaign tempo.",
+      "author": "Built-in",
+      "file": "scenarios/urban_reform_wave.json"
+    },
+    {
+      "id": "provincial_kingmakers",
+      "name": "Provincial Kingmakers",
+      "description": "Stronger regional machines and high BanYai influence across provinces.",
+      "author": "Built-in",
+      "file": "scenarios/provincial_kingmakers.json"
+    },
+    {
+      "id": "fragmented_house",
+      "name": "Fragmented House",
+      "description": "Lower base popularity, more parties, tougher coalition math.",
+      "author": "Built-in",
+      "file": "scenarios/fragmented_house.json"
+    },
+    {
+      "id": "chart_thai_jareon_mod",
+      "name": "Chart Thai Jareon Mod",
+      "description": "Adds Chart Thai Jareon (CTJ) with BanYai 100 in Ratchaburi and Nong Khai.",
+      "author": "User Mod",
+      "file": "scenarios/chart_thai_jareon_mod.json"
+    }
+  ]
+}

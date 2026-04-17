@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>🏛️ Thailand Election & Parliament Simulator</title>
+    <meta name="description" content="A complex political simulation game set in Thailand. Campaign, win elections, form coalitions, pass laws, and navigate shadow politics.">
+
+    <!-- Styles -->
+    <link rel="stylesheet" href="styles.css">
+
+    <!-- Favicon (parliament emoji) -->
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🏛️</text></svg>">
+</head>
+<body>
+
+    <!-- ═══ MAIN MENU ═══════════════════════════════════════ -->
+    <div id="screen-menu" class="screen">
+        <h1 class="menu-title">สภาจำลอง</h1>
+        <h2 class="menu-title" style="font-size:1.8rem;margin-bottom:4px;">Thailand Election &<br>Parliament Simulator</h2>
+        <p class="menu-subtitle">Campaign. Win. Govern. Survive.</p>
+        <button class="btn-primary btn-gold" id="btn-start-game">
+            ▶ เริ่มเกม — Start Game
+        </button>
+        <p style="margin-top:20px;color:var(--text-dim);font-size:0.75rem;">
+            500-seat Parliament • 9 Parties • 400 Constituencies • Shadow Politics
+        </p>
+    </div>
+
+    <!-- ═══ SETUP SCREEN ════════════════════════════════════ -->
+    <div id="screen-setup" class="screen hidden">
+        <h1>เลือกพรรคของคุณ</h1>
+        <p class="setup-subtitle">Choose your party and lead them to victory</p>
+        <div class="setup-container">
+            <div id="party-grid"></div>
+            <div id="party-detail">
+                <p class="placeholder-text">← Select a party to see details</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- ═══ CAMPAIGN SCREEN ═════════════════════════════════ -->
+    <div id="screen-campaign" class="screen hidden">
+        <div id="map-container"></div>
+        <div id="campaign-sidebar"></div>
+    </div>
+
+    <!-- ═══ ELECTION RESULTS ════════════════════════════════ -->
+    <div id="screen-election" class="screen hidden">
+        <div id="map-container-election" style="background:var(--bg-primary);"></div>
+        <div id="election-results-panel"></div>
+    </div>
+
+    <!-- ═══ COALITION SCREEN ════════════════════════════════ -->
+    <div id="screen-coalition" class="screen hidden">
+        <div id="coalition-panel"></div>
+    </div>
+
+    <!-- ═══ PARLIAMENT SCREEN ═══════════════════════════════ -->
+    <div id="screen-parliament" class="screen hidden">
+        <div id="parliament-main"></div>
+        <div id="parliament-map-sidebar">
+            <div id="parliament-map-container"></div>
+        </div>
+    </div>
+
+    <!-- ═══ TOOLTIP ═════════════════════════════════════════ -->
+    <div id="tooltip" class="hidden"></div>
+
+    <!-- ═══ MODAL OVERLAY ═══════════════════════════════════ -->
+    <div id="modal" class="hidden"></div>
+
+    <!-- ═══ META TOOLBAR ═════════════════════════════════════ -->
+    <div id="meta-toolbar">
+        <button class="btn-small" id="btn-open-save-load" style="margin:0;">💾 Save / Load</button>
+        <button class="btn-small" id="btn-open-history" style="margin:0;">📜 Run History</button>
+        <button class="btn-small" id="btn-open-sandbox" style="margin:0;">🧪 Sandbox</button>
+        <button class="btn-small" id="btn-open-scenario" style="margin:0;">🧩 Scenario Mod</button>
+    </div>
+
+    <!-- ═══ SCRIPTS ═════════════════════════════════════════ -->
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+    <script src="https://unpkg.com/topojson-client@3"></script>
+
+    <!-- Game Data -->
+    <script src="data/provinces.js"></script>
+    <script src="data/parties.js"></script>
+    <script src="data/names.js"></script>
+
+    <!-- Models & Engine -->
+    <script src="models.js"></script>
+    <script src="engine.js"></script>
+
+    <!-- UI -->
+    <script src="ui.js"></script>
+
+    <!-- App Controller -->
+    <script src="app.js"></script>
+
+    <!-- Boot -->
+    <script>
+        document.getElementById('btn-start-game').addEventListener('click', function() {
+            this.disabled = true;
+            this.textContent = '⏳ Loading...';
+            // Game init is triggered by DOMContentLoaded in app.js
+            // Just transition to setup
+            if (window.Game && window.Game.App && window.Game.App.state) {
+                window.Game.App.transition('STATE_SETUP');
+            } else {
+                // Wait for init
+                const check = setInterval(() => {
+                    if (window.Game && window.Game.App && window.Game.App.state) {
+                        clearInterval(check);
+                        window.Game.App.transition('STATE_SETUP');
+                    }
+                }, 100);
+            }
+        });
+    </script>
+
+</body>
+</html>

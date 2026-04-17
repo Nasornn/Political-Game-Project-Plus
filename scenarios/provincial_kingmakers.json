@@ -1,0 +1,75 @@
+{
+  "name": "Provincial Kingmakers",
+  "description": "Regional brokers and provincial clans dominate seat conversion.",
+  "baseMode": "realistic",
+  "campaign": {
+    "maxTurns": 8,
+    "apPerTurn": 10,
+    "emergentPartyChance": 0.22
+  },
+  "partyOverrides": [
+    {
+      "id": "bhumjaithai",
+      "basePopularity": 14,
+      "banYaiPower": 55,
+      "regionalBanYai": {
+        "Northeast": 78,
+        "Central": 82,
+        "East": 62
+      }
+    },
+    {
+      "id": "palangpracharath",
+      "basePopularity": 9,
+      "banYaiPower": 50,
+      "regionalBanYai": {
+        "Central": 58,
+        "East": 54,
+        "West": 48
+      }
+    },
+    {
+      "id": "klatham",
+      "basePopularity": 11,
+      "banYaiPower": 48,
+      "regionalBanYai": {
+        "North": 85,
+        "East": 68
+      }
+    },
+    {
+      "id": "democrat",
+      "basePopularity": 7,
+      "regionalBanYai": {
+        "South": 82
+      },
+      "regionalPopMod": {
+        "South": 28
+      }
+    }
+  ],
+  "customParties": [
+    {
+      "id": "local_power_bloc",
+      "name": "Local Power Bloc",
+      "thaiName": "กลุ่มอำนาจท้องถิ่น",
+      "shortName": "LPB",
+      "hexColor": "#B45309",
+      "basePopularity": 6,
+      "banYaiPower": 35,
+      "ideology": 56,
+      "politicalCapital": 210,
+      "greyMoney": 90,
+      "regionalBanYai": {
+        "West": 60,
+        "Central": 46
+      },
+      "provincialBanYai": {
+        "Suphan Buri": 82,
+        "Nakhon Pathom": 70,
+        "Ratchaburi": 74
+      },
+      "description": "A coalition of provincial families with strong district-level mobilization."
+    }
+  ]
+}

@@ -1,0 +1,42 @@
+{
+  "name": "Chart Thai Jareon Mod",
+  "description": "Adds Chart Thai Jareon as a selectable custom party with strong BanYai bases in Ratchaburi and Nong Khai.",
+  "baseMode": "realistic",
+  "customParties": [
+    {
+      "id": "chart_thai_jareon",
+      "name": "Chart Thai Jareon",
+      "thaiName": "ชาติไทยเจริญ",
+      "shortName": "CTJ",
+      "hexColor": "#800020",
+      "basePopularity": 7,
+      "banYaiPower": 20,
+      "ideology": 50,
+      "politicalCapital": 160,
+      "greyMoney": 40,
+      "regionalPopMod": {
+        "Bangkok": 0,
+        "Central": 0,
+        "North": 0,
+        "Northeast": 0,
+        "East": 0,
+        "West": 15,
+        "South": 0
+      },
+      "regionalBanYai": {
+        "Bangkok": 0,
+        "Central": 20,
+        "North": 0,
+        "Northeast": 15,
+        "East": 20,
+        "West": 30,
+        "South": 0
+      },
+      "provincialBanYai": {
+        "Ratchaburi": 100,
+        "Nong Khai": 100
+      },
+      "description": "Regional machine party anchored by elite BanYai networks in Ratchaburi and Nong Khai."
+    }
+  ]
+}
