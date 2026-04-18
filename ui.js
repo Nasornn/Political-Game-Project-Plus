@@ -330,6 +330,11 @@ window.Game.UI.Screens = {
     _setupParallaxFrame: 0,
     _campaignNotificationState: null,
     _campaignNotificationTimer: 0,
+    _campaignMobileView: 'map',
+    _campaignSwipeBound: false,
+    _campaignSwipeHandlers: null,
+    _responsiveWatcherBound: false,
+    _responsiveWatcher: null,
 
     _setMetaToolbarButtonState(buttonId, enabled, lockedReason, hideWhenDisabled = false) {
         const btn = document.getElementById(buttonId);
@@ -508,7 +513,145 @@ window.Game.UI.Screens = {
         return Math.max(base, Math.min(max, base + (length * perChar)));
     },
 
+    _isMobileLayout() {
+        return !!(window.matchMedia && window.matchMedia('(max-width: 900px)').matches);
+    },
+
+    _bindResponsiveWatcher() {
+        if (this._responsiveWatcherBound) return;
+        this._responsiveWatcher = () => {
+            this._syncResponsiveMode();
+            if (this.currentScreen === 'screen-campaign') {
+                this._setupCampaignMobileNavigation();
+            }
+        };
+        window.addEventListener('resize', this._responsiveWatcher, { passive: true });
+        this._responsiveWatcherBound = true;
+    },
+
+    _syncResponsiveMode() {
+        const isMobile = this._isMobileLayout();
+        document.body.classList.toggle('ui-mobile', isMobile);
+        document.body.classList.toggle('ui-desktop', !isMobile);
+
+        if (!isMobile) {
+            this._campaignMobileView = 'map';
+            const campaignScreen = document.getElementById('screen-campaign');
+            if (campaignScreen) {
+                campaignScreen.classList.remove('mobile-view-map', 'mobile-view-sidebar');
+            }
+        }
+    },
+
+    _setCampaignMobileView(view = 'map') {
+        const campaignScreen = document.getElementById('screen-campaign');
+        if (!campaignScreen) return;
+
+        const safeView = view === 'sidebar' ? 'sidebar' : 'map';
+        this._campaignMobileView = safeView;
+
+        campaignScreen.classList.toggle('mobile-view-map', safeView === 'map');
+        campaignScreen.classList.toggle('mobile-view-sidebar', safeView === 'sidebar');
+
+        const controls = document.getElementById('campaign-mobile-controls');
+        if (!controls) return;
+
+        controls.querySelectorAll('.campaign-mobile-toggle').forEach(btn => {
+            btn.classList.toggle('active', btn.dataset.view === safeView);
+        });
+    },
+
+    _bindCampaignSwipeNavigation() {
+        if (this._campaignSwipeBound) return;
+        const campaignScreen = document.getElementById('screen-campaign');
+        if (!campaignScreen) return;
+
+        let startX = 0;
+        let startY = 0;
+        let startTs = 0;
+
+        const onStart = (event) => {
+            if (this.currentScreen !== 'screen-campaign' || !this._isMobileLayout()) return;
+            if (!event.touches || event.touches.length !== 1) return;
+            const t = event.touches[0];
+            startX = t.clientX;
+            startY = t.clientY;
+            startTs = Date.now();
+        };
+
+        const onEnd = (event) => {
+            if (this.currentScreen !== 'screen-campaign' || !this._isMobileLayout()) return;
+            if (!event.changedTouches || event.changedTouches.length === 0) return;
+
+            const t = event.changedTouches[0];
+            const dx = t.clientX - startX;
+            const dy = t.clientY - startY;
+            const dt = Date.now() - startTs;
+
+            if (dt > 520) return;
+            if (Math.abs(dx) < 56) return;
+            if (Math.abs(dx) < (Math.abs(dy) * 1.25)) return;
+
+            if (dx < 0) {
+                this._setCampaignMobileView('sidebar');
+            } else {
+                this._setCampaignMobileView('map');
+            }
+        };
+
+        campaignScreen.addEventListener('touchstart', onStart, { passive: true });
+        campaignScreen.addEventListener('touchend', onEnd, { passive: true });
+
+        this._campaignSwipeHandlers = { onStart, onEnd };
+        this._campaignSwipeBound = true;
+    },
+
+    _setupCampaignMobileNavigation() {
+        const campaignScreen = document.getElementById('screen-campaign');
+        if (!campaignScreen) return;
+
+        const isMobile = this._isMobileLayout();
+        let controls = document.getElementById('campaign-mobile-controls');
+
+        if (!controls) {
+            controls = document.createElement('div');
+            controls.id = 'campaign-mobile-controls';
+            controls.className = 'campaign-mobile-controls';
+            controls.innerHTML = `
+                <div class="campaign-mobile-switch" role="tablist" aria-label="Campaign mobile view switch">
+                    <button class="campaign-mobile-toggle active" data-view="map" role="tab" aria-selected="true">🗺️ Map</button>
+                    <button class="campaign-mobile-toggle" data-view="sidebar" role="tab" aria-selected="false">🎛️ Command</button>
+                </div>
+                <div class="campaign-mobile-hint">Swipe left/right to switch views</div>
+            `;
+            campaignScreen.appendChild(controls);
+        }
+
+        if (!controls.dataset.bound) {
+            controls.addEventListener('click', (event) => {
+                const btn = event.target.closest('.campaign-mobile-toggle');
+                if (!btn) return;
+                this._setCampaignMobileView(btn.dataset.view || 'map');
+            });
+            controls.dataset.bound = '1';
+        }
+
+        if (!isMobile) {
+            controls.classList.remove('active');
+            controls.setAttribute('aria-hidden', 'true');
+            campaignScreen.classList.remove('mobile-view-map', 'mobile-view-sidebar');
+            this._campaignMobileView = 'map';
+            return;
+        }
+
+        controls.classList.add('active');
+        controls.setAttribute('aria-hidden', 'false');
+        this._setCampaignMobileView(this._campaignMobileView || 'map');
+        this._bindCampaignSwipeNavigation();
+    },
+
     show(screenId) {
+        this._bindResponsiveWatcher();
         // Hide all screens
         document.querySelectorAll('.screen').forEach(s => s.classList.add('hidden'));
         // Show target
@@ -517,6 +660,7 @@ window.Game.UI.Screens = {
             el.classList.remove('hidden');
             this.currentScreen = screenId;
         }
+        this._syncResponsiveMode();
         if (screenId !== 'screen-parliament') {
             this._clearParliamentKeyboardShortcuts();
         }
@@ -1816,6 +1960,7 @@ window.Game.UI.Screens = {
 
         // Render action cards
         this._renderActionCards(gameState);
+        this._setupCampaignMobileNavigation();
 
         // Province click handler for campaign
         this.onProvinceClick = (provinceName) => {
@@ -2157,32 +2302,58 @@ window.Game.UI.Screens = {
 
         const results = gameState.electionResults;
         const parties = gameState.parties;
+        this._clearElectionRevealEffects();
 
         // Animate map
         window.Game.UI.Map.updateMapColors(results, parties, gameState.districts, true);
 
         // Sort parties by total seats
         const sorted = [...parties].sort((a, b) => results.totalSeats[b.id] - results.totalSeats[a.id]);
+        const topParty = sorted[0] || null;
+        const topSeats = topParty ? (results.totalSeats[topParty.id] || 0) : 0;
+        const majorityNeeded = 251;
+        const majorityGap = Math.max(0, majorityNeeded - topSeats);
+        const hasMajority = topSeats >= majorityNeeded;
 
         panel.innerHTML = `
             <div class="results-header">
                 <h2>🗳️ Election Results 2569</h2>
                 <p class="results-subtitle">500-Seat Parliament</p>
             </div>
+            <div class="results-spotlight">
+                <div class="spotlight-card winner">
+                    <span class="spotlight-label">Leading Party</span>
+                    <strong class="spotlight-party" style="color:${topParty ? topParty.hexColor : '#f8fafc'}">
+                        ${topParty ? `${topParty.thaiName} (${topParty.shortName})` : 'No Leader'}
+                    </strong>
+                    <div class="spotlight-metric">
+                        <span class="spotlight-number" data-roll-to="${topSeats}">0</span>
+                        <span class="spotlight-unit">seats</span>
+                    </div>
+                </div>
+                <div class="spotlight-card ${hasMajority ? 'secure' : 'chasing'}">
+                    <span class="spotlight-label">Majority Status</span>
+                    <strong class="spotlight-party">${hasMajority ? 'Majority Secured' : 'Needs Coalition'}</strong>
+                    <div class="spotlight-metric">
+                        <span class="spotlight-number" data-roll-to="${hasMajority ? topSeats : majorityGap}">0</span>
+                        <span class="spotlight-unit">${hasMajority ? 'seats held' : 'seats short'}</span>
+                    </div>
+                </div>
+            </div>
             <div class="results-chart" id="results-chart"></div>
             <div class="results-table">
                 <div class="results-table-header">
                     <span>Party</span><span>Constituency</span><span>Party List</span><span>Total</span>
                 </div>
-                ${sorted.map(p => `
-                    <div class="results-row ${p.id === gameState.playerPartyId ? 'player-row' : ''}">
+                ${sorted.map((p, index) => `
+                    <div class="results-row ${p.id === gameState.playerPartyId ? 'player-row' : ''}" style="--row-index:${index};">
                         <span class="results-party">
                             <span class="party-dot" style="background:${p.hexColor}"></span>
                             ${p.thaiName} <small>${p.shortName}</small>
                         </span>
-                        <span>${results.constituencyWins[p.id]}</span>
-                        <span>${results.partyListSeats[p.id]}</span>
-                        <span class="results-total">${results.totalSeats[p.id]}</span>
+                        <span class="results-value" data-roll-to="${results.constituencyWins[p.id] || 0}">0</span>
+                        <span class="results-value" data-roll-to="${results.partyListSeats[p.id] || 0}">0</span>
+                        <span class="results-total" data-roll-to="${results.totalSeats[p.id] || 0}">0</span>
                     </div>
                 `).join('')}
             </div>
@@ -2190,7 +2361,7 @@ window.Game.UI.Screens = {
                 <div class="majority-line">
                     <span>Majority: 251 seats</span>
                     <div class="majority-bar">
-                        ${sorted.map(p => `<div class="majority-segment" style="width:${results.totalSeats[p.id] / 5}%;background:${p.hexColor}" title="${p.shortName}: ${results.totalSeats[p.id]}"></div>`).join('')}
+                        ${sorted.map((p, index) => `<div class="majority-segment" style="--segment-index:${index};background:${p.hexColor}" data-target-width="${results.totalSeats[p.id] / 5}" title="${p.shortName}: ${results.totalSeats[p.id]}"></div>`).join('')}
                         <div class="majority-marker" style="left:50.2%"></div>
                     </div>
                 </div>
@@ -2202,10 +2373,205 @@ window.Game.UI.Screens = {
 
         // Hemicycle chart
         this._renderHemicycle('results-chart', sorted, results);
+        this._runElectionReveal(panel, topParty ? topParty.hexColor : '#d4a843');
 
         document.getElementById('btn-to-coalition').addEventListener('click', () => {
             window.Game.App.transition('STATE_COALITION');
         });
+    },
+
+    _runElectionReveal(panel, winnerColor = '#d4a843') {
+        if (!panel) return;
+
+        const values = Array.from(panel.querySelectorAll('[data-roll-to]'));
+        const segments = Array.from(panel.querySelectorAll('.majority-segment'));
+        const reducedMotion = !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+        panel.classList.remove('is-revealing');
+        panel.classList.remove('finale-hit');
+
+        for (const el of values) {
+            el.textContent = '0';
+        }
+
+        for (const segment of segments) {
+            segment.style.width = '0%';
+        }
+
+        requestAnimationFrame(() => {
+            panel.classList.add('is-revealing');
+            this._playElectionRevealCue('intro');
+
+            for (const segment of segments) {
+                const target = Number(segment.dataset.targetWidth || 0);
+                segment.style.width = `${Math.max(0, Math.min(100, target))}%`;
+            }
+
+            let revealCompleteMs = 320;
+            values.forEach((el, index) => {
+                const target = Math.max(0, Number(el.dataset.rollTo || 0));
+                const baseDelay = 220 + (index * 65);
+                const duration = 700 + Math.min(1200, target * 8);
+                revealCompleteMs = Math.max(revealCompleteMs, baseDelay + duration);
+                this._animateNumber(el, target, duration, baseDelay);
+            });
+
+            this._scheduleElectionFinale(panel, revealCompleteMs + 180, winnerColor, reducedMotion);
+        });
+    },
+
+    _scheduleElectionFinale(panel, delayMs, winnerColor, reducedMotion) {
+        if (!panel) return;
+        if (this._electionRevealFinaleTimer) {
+            clearTimeout(this._electionRevealFinaleTimer);
+            this._electionRevealFinaleTimer = null;
+        }
+
+        this._electionRevealFinaleTimer = setTimeout(() => {
+            panel.classList.add('finale-hit');
+            if (this._electionRevealPulseTimer) {
+                clearTimeout(this._electionRevealPulseTimer);
+                this._electionRevealPulseTimer = null;
+            }
+            this._electionRevealPulseTimer = setTimeout(() => {
+                panel.classList.remove('finale-hit');
+            }, 760);
+
+            this._playElectionRevealCue('finale');
+            if (!reducedMotion) {
+                this._spawnElectionWinnerBurst(panel, winnerColor);
+            }
+        }, Math.max(450, Math.round(delayMs)));
+    },
+
+    _spawnElectionWinnerBurst(panel, winnerColor) {
+        if (!panel) return;
+
+        const existing = panel.querySelector('.election-burst');
+        if (existing) existing.remove();
+
+        const burst = document.createElement('div');
+        burst.className = 'election-burst';
+
+        const ring = document.createElement('span');
+        ring.className = 'election-burst-ring';
+        ring.style.setProperty('--burst-color', winnerColor || '#d4a843');
+        burst.appendChild(ring);
+
+        const particles = 26;
+        for (let i = 0; i < particles; i++) {
+            const particle = document.createElement('span');
+            particle.className = 'election-burst-particle';
+
+            const angle = (Math.PI * 2 * i) / particles + ((Math.random() - 0.5) * 0.28);
+            const distance = 52 + Math.random() * 92;
+            const dx = Math.cos(angle) * distance;
+            const dy = Math.sin(angle) * distance;
+            const size = 4 + (Math.random() * 7);
+            const delay = Math.round(Math.random() * 120);
+
+            particle.style.setProperty('--dx', `${dx.toFixed(2)}px`);
+            particle.style.setProperty('--dy', `${dy.toFixed(2)}px`);
+            particle.style.setProperty('--size', `${size.toFixed(2)}px`);
+            particle.style.setProperty('--delay', `${delay}ms`);
+            particle.style.setProperty('--burst-color', (i % 4 === 0) ? '#f8d57a' : (winnerColor || '#d4a843'));
+            burst.appendChild(particle);
+        }
+
+        panel.appendChild(burst);
+        setTimeout(() => burst.remove(), 1250);
+    },
+
+    _playElectionRevealCue(type = 'intro') {
+        const Ctx = window.AudioContext || window.webkitAudioContext;
+        if (!Ctx) return;
+
+        if (!this._audioCtx) {
+            try {
+                this._audioCtx = new Ctx();
+            } catch (_) {
+                return;
+            }
+        }
+
+        const ctx = this._audioCtx;
+        if (!ctx) return;
+        if (ctx.state === 'suspended') {
+            ctx.resume().catch(() => {});
+        }
+
+        const now = ctx.currentTime + 0.01;
+        const notes = type === 'finale'
+            ? [
+                { freq: 523.25, at: 0.00, dur: 0.10 },
+                { freq: 659.25, at: 0.08, dur: 0.10 },
+                { freq: 783.99, at: 0.16, dur: 0.14 }
+            ]
+            : [
+                { freq: 293.66, at: 0.00, dur: 0.06 },
+                { freq: 369.99, at: 0.06, dur: 0.08 }
+            ];
+
+        for (const note of notes) {
+            const osc = ctx.createOscillator();
+            const gain = ctx.createGain();
+            osc.type = type === 'finale' ? 'triangle' : 'sine';
+            osc.frequency.setValueAtTime(note.freq, now + note.at);
+
+            gain.gain.setValueAtTime(0.0001, now + note.at);
+            gain.gain.exponentialRampToValueAtTime(type === 'finale' ? 0.038 : 0.025, now + note.at + 0.015);
+            gain.gain.exponentialRampToValueAtTime(0.0001, now + note.at + note.dur);
+
+            osc.connect(gain);
+            gain.connect(ctx.destination);
+
+            osc.start(now + note.at);
+            osc.stop(now + note.at + note.dur + 0.02);
+        }
+    },
+
+    _clearElectionRevealEffects() {
+        if (this._electionRevealFinaleTimer) {
+            clearTimeout(this._electionRevealFinaleTimer);
+            this._electionRevealFinaleTimer = null;
+        }
+        if (this._electionRevealPulseTimer) {
+            clearTimeout(this._electionRevealPulseTimer);
+            this._electionRevealPulseTimer = null;
+        }
+
+        const panel = document.getElementById('election-results-panel');
+        if (!panel) return;
+
+        panel.classList.remove('finale-hit');
+        const existing = panel.querySelector('.election-burst');
+        if (existing) existing.remove();
+    },
+
+    _animateNumber(el, target, duration = 900, delay = 0) {
+        if (!el) return;
+        const safeDuration = Math.max(300, duration);
+        const start = performance.now() + Math.max(0, delay);
+
+        const easeOutCubic = (t) => 1 - Math.pow(1 - t, 3);
+        const step = (now) => {
+            if (now < start) {
+                requestAnimationFrame(step);
+                return;
+            }
+
+            const progress = Math.min(1, (now - start) / safeDuration);
+            const eased = easeOutCubic(progress);
+            const value = Math.round(target * eased);
+            el.textContent = String(value);
+
+            if (progress < 1) {
+                requestAnimationFrame(step);
+            } else {
+                el.textContent = String(target);
+            }
+        };
+
+        requestAnimationFrame(step);
     },
 
     _renderHemicycle(containerId, sortedParties, results) {
