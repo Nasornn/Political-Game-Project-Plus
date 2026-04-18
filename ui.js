@@ -323,6 +323,13 @@ window.Game.UI.Screens = {
     _metaToolbarBound: false,
     _parliamentKeyHandler: null,
     _parliamentKeyboardIndex: 0,
+    _setupThemeVariant: 'gold-chamber',
+    _setupParallaxBound: false,
+    _setupParallaxHandlers: null,
+    _setupParallaxState: null,
+    _setupParallaxFrame: 0,
+    _campaignNotificationState: null,
+    _campaignNotificationTimer: 0,
 
     _setMetaToolbarButtonState(buttonId, enabled, lockedReason, hideWhenDisabled = false) {
         const btn = document.getElementById(buttonId);
@@ -354,6 +361,153 @@ window.Game.UI.Screens = {
         this._setMetaToolbarButtonState('btn-open-scenario', setupOnlyToolsEnabled, 'Scenario Mod is available in Setup only.', true);
     },
 
+    _getSetupThemeVariants() {
+        return [
+            { id: 'gold-chamber', label: 'Gold Chamber', tone: 'Warm cinematic gold' },
+            { id: 'ice-blue', label: 'Ice Blue', tone: 'Cool crystal intelligence' },
+            { id: 'neutral-executive', label: 'Neutral Executive', tone: 'Clean boardroom steel' }
+        ];
+    },
+
+    _applySetupThemeVariant(variantId = this._setupThemeVariant) {
+        const allowed = new Set(this._getSetupThemeVariants().map(v => v.id));
+        const next = allowed.has(variantId) ? variantId : 'gold-chamber';
+        this._setupThemeVariant = next;
+
+        const el = document.getElementById('screen-setup');
+        if (!el) return;
+
+        allowed.forEach(id => el.classList.remove(`setup-theme-${id}`));
+        el.classList.add(`setup-theme-${next}`);
+    },
+
+    _bindSetupParallaxMotion() {
+        if (this._setupParallaxBound) return;
+        const el = document.getElementById('screen-setup');
+        if (!el) return;
+
+        this._setupParallaxState = {
+            targetX: 0,
+            targetY: 0,
+            currentX: 0,
+            currentY: 0,
+            intensity: 0.72,
+            smoothing: 0.16
+        };
+
+        const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
+
+        const applyFromPointer = (event) => {
+            if (this.currentScreen !== 'screen-setup') return;
+            const rect = el.getBoundingClientRect();
+            if (rect.width <= 0 || rect.height <= 0) return;
+
+            const x = clamp((event.clientX - rect.left) / rect.width, 0, 1);
+            const y = clamp((event.clientY - rect.top) / rect.height, 0, 1);
+            const state = this._setupParallaxState;
+            if (!state) return;
+
+            state.targetX = ((x - 0.5) * 2) * state.intensity;
+            state.targetY = ((y - 0.5) * 2) * state.intensity;
+            this._startSetupParallaxLoop();
+        };
+
+        const resetPointer = () => {
+            const state = this._setupParallaxState;
+            if (!state) return;
+            state.targetX = 0;
+            state.targetY = 0;
+            this._startSetupParallaxLoop();
+        };
+
+        el.addEventListener('pointermove', applyFromPointer, { passive: true });
+        el.addEventListener('pointerleave', resetPointer, { passive: true });
+        el.addEventListener('pointercancel', resetPointer, { passive: true });
+
+        this._setupParallaxHandlers = { applyFromPointer, resetPointer };
+        this._setupParallaxBound = true;
+        this._resetSetupParallaxMotion();
+    },
+
+    _startSetupParallaxLoop() {
+        if (this._setupParallaxFrame) return;
+        const el = document.getElementById('screen-setup');
+        if (!el) return;
+
+        const step = () => {
+            this._setupParallaxFrame = 0;
+            const state = this._setupParallaxState;
+            if (!state) return;
+
+            state.currentX += (state.targetX - state.currentX) * state.smoothing;
+            state.currentY += (state.targetY - state.currentY) * state.smoothing;
+
+            const nearTargetX = Math.abs(state.targetX - state.currentX) < 0.0004;
+            const nearTargetY = Math.abs(state.targetY - state.currentY) < 0.0004;
+            if (nearTargetX) state.currentX = state.targetX;
+            if (nearTargetY) state.currentY = state.targetY;
+
+            el.style.setProperty('--setup-parallax-x', state.currentX.toFixed(4));
+            el.style.setProperty('--setup-parallax-y', state.currentY.toFixed(4));
+
+            const stillMoving = !nearTargetX || !nearTargetY;
+            const shouldContinue = this.currentScreen === 'screen-setup' && stillMoving;
+            if (shouldContinue) {
+                this._setupParallaxFrame = requestAnimationFrame(step);
+            }
+        };
+
+        this._setupParallaxFrame = requestAnimationFrame(step);
+    },
+
+    _stopSetupParallaxLoop() {
+        if (!this._setupParallaxFrame) return;
+        cancelAnimationFrame(this._setupParallaxFrame);
+        this._setupParallaxFrame = 0;
+    },
+
+    _resetSetupParallaxMotion() {
+        const state = this._setupParallaxState;
+        if (state) {
+            state.targetX = 0;
+            state.targetY = 0;
+            state.currentX = 0;
+            state.currentY = 0;
+        }
+        const el = document.getElementById('screen-setup');
+        if (!el) return;
+        el.style.setProperty('--setup-parallax-x', '0');
+        el.style.setProperty('--setup-parallax-y', '0');
+    },
+
+    _syncCampaignNotificationBar() {
+        const slot = document.getElementById('campaign-notification-slot');
+        if (!slot) return;
+        const content = slot.querySelector('.campaign-notification-content');
+        if (!content) return;
+
+        const state = this._campaignNotificationState;
+        const hasActiveState = !!(state && state.expiresAt > Date.now());
+        if (!hasActiveState) {
+            slot.classList.remove('has-active');
+            content.className = 'campaign-notification-content';
+            content.textContent = 'No notifications yet.';
+            return;
+        }
+
+        slot.classList.add('has-active');
+        content.className = `campaign-notification-content notif-${state.type || 'info'}`;
+        content.textContent = state.message;
+    },
+
+    _getNotificationDuration(message, isCampaign = false) {
+        const length = String(message || '').trim().length;
+        const base = isCampaign ? 5200 : 3400;
+        const perChar = isCampaign ? 42 : 28;
+        const max = isCampaign ? 14000 : 9000;
+        return Math.max(base, Math.min(max, base + (length * perChar)));
+    },
+
     show(screenId) {
         // Hide all screens
         document.querySelectorAll('.screen').forEach(s => s.classList.add('hidden'));
@@ -366,6 +520,13 @@ window.Game.UI.Screens = {
         if (screenId !== 'screen-parliament') {
             this._clearParliamentKeyboardShortcuts();
         }
+        if (screenId === 'screen-setup') {
+            this._applySetupThemeVariant(this._setupThemeVariant);
+            this._bindSetupParallaxMotion();
+        } else {
+            this._stopSetupParallaxLoop();
+            this._resetSetupParallaxMotion();
+        }
         this._updateMetaToolbarAvailability(screenId);
     },
 
@@ -374,62 +535,6 @@ window.Game.UI.Screens = {
             document.removeEventListener('keydown', this._parliamentKeyHandler);
             this._parliamentKeyHandler = null;
         }
-        document.querySelectorAll('.parliament-action-btn.keyboard-selected').forEach(btn => {
-            btn.classList.remove('keyboard-selected');
-        });
-    },
-
-    _collectParliamentActionButtons() {
-        const main = document.getElementById('parliament-main');
-        if (!main) return [];
-        const selector = [
-            '.qt-option-btn',
-            '#btn-end-question-time',
-            '#btn-proceed-adjournment',
-            '#btn-advance-from-adjournment',
-            '.btn-counter-tactic',
-            '#btn-auto-cabinet-portfolios',
-            '#btn-finalize-cabinet-portfolios',
-            '.btn-ministerial-decision',
-            '#btn-pm-cabinet',
-            '#btn-pm-inspection',
-            '#btn-pm-emergency',
-            '#btn-opp-scrutiny',
-            '#btn-opp-townhall',
-            '#btn-opp-walkout',
-            '#btn-opp-split',
-            '.btn-gov-vote',
-            '#btn-no-confidence',
-            '#btn-next-half-year',
-            '#btn-next-year',
-            '#btn-dissolve'
-        ].join(', ');
-
-        const buttons = Array.from(main.querySelectorAll(selector))
-            .filter(btn => {
-                if (!(btn instanceof HTMLElement)) return false;
-                if (btn.classList.contains('hidden')) return false;
-                if (btn.getAttribute('disabled') !== null) return false;
-                if (btn.offsetParent === null) return false;
-                return true;
-            });
-
-        buttons.forEach(btn => btn.classList.add('parliament-action-btn'));
-        return buttons;
-    },
-
-    _highlightParliamentActionButton(index) {
-        const actions = this._collectParliamentActionButtons();
-        if (actions.length === 0) return;
-        if (index < 0) index = actions.length - 1;
-        if (index >= actions.length) index = 0;
-        this._parliamentKeyboardIndex = index;
-
-        actions.forEach(btn => btn.classList.remove('keyboard-selected'));
-        const target = actions[index];
-        if (!target) return;
-        target.classList.add('keyboard-selected');
-        target.focus({ preventScroll: true });
     },
 
     _bindParliamentKeyboardShortcuts(gameState) {
@@ -466,30 +571,9 @@ window.Game.UI.Screens = {
                 return;
             }
 
-            if (key === 'arrowdown' || key === 'arrowright') {
-                event.preventDefault();
-                this._highlightParliamentActionButton(this._parliamentKeyboardIndex + 1);
-                return;
-            }
-
-            if (key === 'arrowup' || key === 'arrowleft') {
-                event.preventDefault();
-                this._highlightParliamentActionButton(this._parliamentKeyboardIndex - 1);
-                return;
-            }
-
-            if (key === 'enter') {
-                const actions = this._collectParliamentActionButtons();
-                const target = actions[this._parliamentKeyboardIndex];
-                if (target) {
-                    event.preventDefault();
-                    target.click();
-                }
-            }
         };
 
         document.addEventListener('keydown', this._parliamentKeyHandler);
-        this._highlightParliamentActionButton(0);
     },
 
     _getCoalitionTrendHistory(gameState, partyId, currentScore) {
@@ -551,6 +635,7 @@ window.Game.UI.Screens = {
                 ? 'Walkout risk: high'
                 : (driftingDown ? 'Warning: partner drifting down' : 'Stable trajectory');
             const warningClass = walkoutRisk ? 'risk-high' : (driftingDown ? 'risk-medium' : 'risk-low');
+            const warningToneClass = walkoutRisk ? 'warning-high' : (driftingDown ? 'warning-medium' : 'warning-low');
 
             return `
                 <div class="coalition-live-card ${warningClass}">
@@ -564,7 +649,7 @@ window.Game.UI.Screens = {
                             ${delta > 0 ? '+' : ''}${delta} (last 2 sessions)
                         </div>
                     </div>
-                    <div class="coalition-live-warning">${warningText}</div>
+                    <div class="coalition-live-warning ${warningToneClass}">${warningText}</div>
                 </div>
             `;
         }).join('');
@@ -594,13 +679,14 @@ window.Game.UI.Screens = {
                         const party = gameState.parties.find(p => p.id === pid);
                         const statusColors = { loyal: '#4ade80', uneasy: '#d4a843', unhappy: '#f59e0b', critical: '#ef4444' };
                         const statusColor = statusColors[data.status] || '#666';
+                        const statusClass = `status-${data.status || 'unknown'}`;
                         const ministries = (gameState.coalitionMinistryOffers || {})[pid] || 0;
                         return `
                             <div class="coalition-partner-card" data-party-id="${pid}">
                                 <div class="partner-header">
                                     <span class="partner-dot" style="background:${party ? party.hexColor : '#666'}"></span>
                                     <span class="partner-name">${data.name}</span>
-                                    <span class="partner-status" style="color:${statusColor}">${data.status.toUpperCase()}</span>
+                                    <span class="partner-status ${statusClass}" style="color:${statusColor}">${data.status.toUpperCase()}</span>
                                 </div>
                                 <div class="satisfaction-bar-container">
                                     <div class="satisfaction-bar" style="width:${data.score}%;background:${statusColor}"></div>
@@ -615,6 +701,7 @@ window.Game.UI.Screens = {
                                                 <span class="demand-deadline">⏰ ${d.remainingSessions} session(s)</span>
                                                 ${d.capitalCost ? `<button class="btn-small btn-fulfill-demand" data-party-id="${pid}" data-demand-id="${d.instanceId}">Fulfill (${d.capitalCost} cap)</button>` : ''}
                                                 ${d.type === 'endorsement' ? `<button class="btn-small btn-fulfill-demand" data-party-id="${pid}" data-demand-id="${d.instanceId}">Fulfill (${d.capitalCost || 25} cap)</button>` : ''}
+                                                ${d.type === 'ministry' ? `<button class="btn-small btn-demand-ministry" data-party-id="${pid}" data-demand-id="${d.instanceId}">Offer +1 Ministry (-30 cap)</button>` : ''}
                                             </div>
                                         `).join('')}
                                     </div>
@@ -650,7 +737,9 @@ window.Game.UI.Screens = {
         const rows = active.map(t => {
             const scopeLabel = t.scope === 'no_confidence' ? 'No-Confidence' : 'Bill Vote';
             const severityLabel = t.severity >= 3 ? 'High' : t.severity === 2 ? 'Medium' : 'Low';
+            const severityClass = t.severity >= 3 ? 'sev-high' : (t.severity === 2 ? 'sev-medium' : 'sev-low');
             const pressure = Math.max(0, Math.round(t.effectiveStrength || 0));
+            const pressureClass = pressure >= 18 ? 'pressure-high' : (pressure >= 10 ? 'pressure-medium' : 'pressure-low');
             const canTable = t.scope === 'bill_vote';
             return `
                 <div class="opposition-tactic-card">
@@ -660,8 +749,8 @@ window.Game.UI.Screens = {
                     </div>
                     <div class="tactic-desc">${t.description}</div>
                     <div class="tactic-metrics">
-                        <span>Severity: <strong>${severityLabel}</strong></span>
-                        <span>Pressure: <strong>${pressure}</strong></span>
+                        <span class="tactic-severity ${severityClass}">Severity: <strong>${severityLabel}</strong></span>
+                        <span class="tactic-pressure ${pressureClass}">Pressure: <strong>${pressure}</strong></span>
                     </div>
                     <div class="tactic-actions">
                         <button class="btn-small btn-counter-tactic" data-maneuver="table_counter_motion" data-tactic-id="${t.instanceId}" ${canTable ? '' : 'disabled'}>Table Counter-Motion (-22 cap)</button>
@@ -748,11 +837,12 @@ window.Game.UI.Screens = {
         if (!event) return '';
 
         const severityLabel = event.severity >= 3 ? 'High' : event.severity === 2 ? 'Medium' : 'Low';
+        const severityClass = event.severity >= 3 ? 'severity-high' : (event.severity === 2 ? 'severity-medium' : 'severity-low');
         return `
             <div class="ministerial-scandal-panel">
                 <div class="ministerial-scandal-head">
                     <h4>Ministerial Scandal Event</h4>
-                    <span class="scandal-severity">${severityLabel}</span>
+                    <span class="scandal-severity ${severityClass}">${severityLabel}</span>
                 </div>
                 <div class="ministerial-scandal-body">
                     <div><strong>${event.ministry}</strong> - ${event.targetPartyName}</div>
@@ -988,32 +1078,38 @@ window.Game.UI.Screens = {
         const jsonText = app.getCustomScenarioEditorJSON();
 
         modal.innerHTML = `
-            <div class="modal-content" style="max-width:740px;">
-                <div class="modal-header">
+            <div class="modal-content scenario-modal">
+                <div class="modal-header scenario-modal-header">
                     <h3>🧩 Custom Scenario Modding</h3>
                     <button class="modal-close" id="modal-close">✕</button>
                 </div>
-                <p style="font-size:0.74rem;color:var(--text-secondary);margin-bottom:8px;line-height:1.35;">
+                <p class="scenario-modal-subtitle">
                     Edit scenario JSON, then apply in Setup. Supports campaign tuning, base-party overrides, and custom parties.
-                    ${currentConfig ? `<br><span style="color:var(--gold-light);">Active: ${currentConfig.name} (${currentConfig.baseMode})</span>` : ''}
+                    ${currentConfig ? `<br><span class="scenario-active-badge">Active: ${currentConfig.name} (${currentConfig.baseMode})</span>` : ''}
                 </p>
-                <textarea id="custom-scenario-json" class="form-input form-textarea" rows="12" style="width:100%;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:0.74rem;line-height:1.35;">${jsonText}</textarea>
-                <div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:8px;">
-                    <button class="btn-small" id="btn-scenario-template" style="margin:0;text-align:center;">Load Template</button>
-                    <button class="btn-small" id="btn-scenario-export" style="margin:0;text-align:center;">Export Current</button>
-                    <button class="btn-small" id="btn-scenario-apply" style="margin:0;text-align:center;">Apply Scenario</button>
-                    <button class="btn-small" id="btn-scenario-disable" style="margin:0;text-align:center;" ${currentConfig ? '' : 'disabled'}>Disable Custom</button>
-                </div>
-                <p style="font-size:0.67rem;color:var(--text-dim);margin-top:6px;">
-                    Apply/disable requires Setup screen. Export works anytime.
-                </p>
-                <div style="margin-top:10px;border-top:1px solid var(--border-subtle);padding-top:8px;">
-                    <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
-                        <div style="font-family:var(--font-main);font-size:0.8rem;color:var(--gold);">Scenario Packs (scenarios folder)</div>
-                        <button class="btn-small" id="btn-scenario-refresh-packs" style="margin:0;text-align:center;">Refresh Packs</button>
-                    </div>
-                    <div id="scenario-pack-list" class="mp-list" style="max-height:140px;margin-top:6px;"></div>
-                    <p style="font-size:0.65rem;color:var(--text-dim);margin-top:5px;">Use Preview to load pack JSON into editor, or Quick Apply from Setup.</p>
+
+                <div class="scenario-modal-layout">
+                    <section class="scenario-editor-pane">
+                        <div class="scenario-section-title">Scenario JSON Editor</div>
+                        <textarea id="custom-scenario-json" class="form-input form-textarea scenario-json-editor" rows="15">${jsonText}</textarea>
+                        <div class="scenario-editor-actions">
+                            <button class="btn-small" id="btn-scenario-template">Load Template</button>
+                            <button class="btn-small" id="btn-scenario-export">Export Current</button>
+                            <button class="btn-small" id="btn-scenario-apply">Apply Scenario</button>
+                            <button class="btn-small" id="btn-scenario-disable" ${currentConfig ? '' : 'disabled'}>Disable Custom</button>
+                        </div>
+                        <p class="scenario-footnote">Apply/disable requires Setup screen. Export works anytime.</p>
+                    </section>
+
+                    <aside class="scenario-pack-pane">
+                        <div class="scenario-pack-head">
+                            <div class="scenario-section-title">Scenario Packs</div>
+                            <button class="btn-small" id="btn-scenario-refresh-packs">Refresh Packs</button>
+                        </div>
+                        <div class="scenario-pack-subtitle">Select mod pack from scenarios folder</div>
+                        <div id="scenario-pack-list" class="mp-list scenario-pack-list"></div>
+                        <p class="scenario-footnote">Use Preview to load pack JSON into editor, or Quick Apply directly from Setup.</p>
+                    </aside>
                 </div>
             </div>
         `;
@@ -1037,16 +1133,16 @@ window.Game.UI.Screens = {
             }
 
             target.innerHTML = result.packs.map(pack => `
-                <div class="coalition-party-card" style="border-left-color:var(--gold);margin-bottom:6px;">
-                    <div>
-                        <div class="cp-name">${pack.name}</div>
-                        <div class="cp-you" style="font-size:0.72rem;">id: ${pack.id} • ${pack.file}</div>
-                        ${pack.description ? `<div style="font-size:0.71rem;color:var(--text-secondary);">${pack.description}</div>` : ''}
-                        ${pack.author ? `<div style="font-size:0.67rem;color:var(--text-dim);">by ${pack.author}</div>` : ''}
+                <div class="scenario-pack-card">
+                    <div class="scenario-pack-main">
+                        <div class="scenario-pack-name">${pack.name}</div>
+                        <div class="scenario-pack-meta">id: ${pack.id} • ${pack.file}</div>
+                        ${pack.description ? `<div class="scenario-pack-desc">${pack.description}</div>` : ''}
+                        ${pack.author ? `<div class="scenario-pack-author">by ${pack.author}</div>` : ''}
                     </div>
-                    <div style="display:flex;gap:6px;align-items:center;min-width:200px;">
-                        <button class="btn-small btn-pack-preview" data-pack-id="${pack.id}" style="margin:0;text-align:center;">Preview</button>
-                        <button class="btn-small btn-pack-apply" data-pack-id="${pack.id}" style="margin:0;text-align:center;">Quick Apply</button>
+                    <div class="scenario-pack-actions">
+                        <button class="btn-small btn-pack-preview" data-pack-id="${pack.id}">Preview</button>
+                        <button class="btn-small btn-pack-apply" data-pack-id="${pack.id}">Quick Apply</button>
                     </div>
                 </div>
             `).join('');
@@ -1111,7 +1207,7 @@ window.Game.UI.Screens = {
         const refreshPacks = async (force = false) => {
             const target = packListEl();
             if (target) {
-                target.innerHTML = '<p class="placeholder-text" style="padding:12px;">Loading scenario packs...</p>';
+                target.innerHTML = '<p class="placeholder-text scenario-pack-loading">Loading scenario packs...</p>';
             }
             const list = await app.listScenarioPacks(force);
             renderPackList(list);
@@ -1138,22 +1234,94 @@ window.Game.UI.Screens = {
         const customScenario = window.Game.App.getCustomScenarioConfig();
         const difficultyMode = window.Game.Engine.Campaign.normalizeDifficultyMode(gameState.difficultyMode || 'medium');
         const difficulties = window.Game.Engine.Campaign.getDifficultyModes();
+        const setupThemes = this._getSetupThemeVariants();
+        let setupCardIndex = 0;
+        const markSetupCard = (el) => {
+            if (!el) return;
+            const idx = setupCardIndex++;
+            el.style.setProperty('--setup-index', String(idx));
+            el.style.setProperty('--setup-depth', `${(4 + (idx * 0.55)).toFixed(2)}px`);
+        };
+        const totalParties = gameState.parties.length;
+        const customPartyCount = gameState.parties.filter(p => p.isCustom).length;
+        const avgPopularity = totalParties > 0
+            ? Math.round((gameState.parties.reduce((sum, p) => sum + (p.basePopularity || 0), 0) / totalParties) * 10) / 10
+            : 0;
+        const topBanYai = gameState.parties.reduce((best, p) => {
+            if (!best || (p.banYaiPower || 0) > (best.banYaiPower || 0)) return p;
+            return best;
+        }, null);
+
+        const setupHero = document.createElement('div');
+        setupHero.className = 'setup-hero-glass';
+        setupHero.innerHTML = `
+            <div class="setup-hero-head">
+                <div>
+                    <h2>Command Center</h2>
+                    <p>Build your power base before the first campaign week starts.</p>
+                </div>
+            </div>
+            <div class="setup-hero-grid">
+                <div class="setup-glass-metric">
+                    <span class="setup-metric-label">Total Parties</span>
+                    <span class="setup-metric-value">${totalParties}</span>
+                </div>
+                <div class="setup-glass-metric">
+                    <span class="setup-metric-label">Custom Parties</span>
+                    <span class="setup-metric-value">${customPartyCount}</span>
+                </div>
+                <div class="setup-glass-metric">
+                    <span class="setup-metric-label">Avg Popularity</span>
+                    <span class="setup-metric-value">${avgPopularity}%</span>
+                </div>
+                <div class="setup-glass-metric">
+                    <span class="setup-metric-label">Strongest BanYai</span>
+                    <span class="setup-metric-value">${topBanYai ? (topBanYai.shortName || topBanYai.thaiName) : '-'}</span>
+                </div>
+            </div>
+            <div class="setup-theme-switcher">
+                <span class="setup-theme-label">Cinematic Variant</span>
+                <div class="setup-theme-options">
+                    ${setupThemes.map(theme => `
+                        <button class="setup-theme-btn ${this._setupThemeVariant === theme.id ? 'active' : ''}" data-setup-theme="${theme.id}">
+                            <span class="setup-theme-btn-title">${theme.label}</span>
+                            <span class="setup-theme-btn-tone">${theme.tone}</span>
+                        </button>
+                    `).join('')}
+                </div>
+            </div>
+        `;
+        markSetupCard(setupHero);
+        grid.appendChild(setupHero);
+        setupHero.querySelectorAll('.setup-theme-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const nextTheme = btn.dataset.setupTheme;
+                if (!nextTheme || nextTheme === this._setupThemeVariant) return;
+                this._applySetupThemeVariant(nextTheme);
+                setupHero.querySelectorAll('.setup-theme-btn').forEach(row => {
+                    row.classList.toggle('active', row.dataset.setupTheme === this._setupThemeVariant);
+                });
+            });
+        });
 
         const scenarioPanel = document.createElement('div');
-        scenarioPanel.className = 'setup-scenario-panel';
+        scenarioPanel.className = 'setup-scenario-panel setup-mode-panel';
         scenarioPanel.innerHTML = `
             <div class="setup-scenario-title">Scenario</div>
             <div class="setup-scenario-actions">
                 <button class="setup-scenario-btn ${scenarioMode === 'realistic' ? 'active' : ''}" data-scenario="realistic">
-                    Realistic (Current)
+                    <span class="setup-scenario-btn-label">Realistic</span>
+                    <span class="setup-scenario-btn-meta">Current strengths</span>
                 </button>
                 <button class="setup-scenario-btn ${scenarioMode === 'balanced' ? 'active' : ''}" data-scenario="balanced">
-                    Balanced
+                    <span class="setup-scenario-btn-label">Balanced</span>
+                    <span class="setup-scenario-btn-meta">Normalized race</span>
                 </button>
             </div>
             <div class="setup-scenario-actions" style="margin-top:8px;grid-template-columns:1fr;">
                 <button class="setup-scenario-btn ${scenarioMode === 'custom' ? 'active' : ''}" id="btn-open-custom-scenario">
-                    ${scenarioMode === 'custom' ? 'Custom Scenario Active' : 'Open Custom Scenario Editor'}
+                    <span class="setup-scenario-btn-label">${scenarioMode === 'custom' ? 'Custom Scenario Active' : 'Open Custom Scenario Editor'}</span>
+                    <span class="setup-scenario-btn-meta">Import or tweak JSON packs</span>
                 </button>
                 ${scenarioMode === 'custom' ? '<button class="setup-scenario-btn" id="btn-disable-custom-scenario">Disable Custom Scenario</button>' : ''}
             </div>
@@ -1196,16 +1364,18 @@ window.Game.UI.Screens = {
                 }
             });
         }
+        markSetupCard(scenarioPanel);
         grid.appendChild(scenarioPanel);
 
         const difficultyPanel = document.createElement('div');
-        difficultyPanel.className = 'setup-scenario-panel';
+        difficultyPanel.className = 'setup-scenario-panel setup-difficulty-panel';
         difficultyPanel.innerHTML = `
             <div class="setup-scenario-title">Campaign Mode</div>
             <div class="setup-scenario-actions" style="grid-template-columns:1fr;gap:6px;">
                 ${difficulties.map(d => `
                     <button class="setup-scenario-btn ${difficultyMode === d.id ? 'active' : ''}" data-difficulty="${d.id}">
-                        ${d.label} (${d.tier})
+                        <span class="setup-scenario-btn-label">${d.label}</span>
+                        <span class="setup-scenario-btn-meta">${d.tier}</span>
                     </button>
                 `).join('')}
             </div>
@@ -1225,6 +1395,7 @@ window.Game.UI.Screens = {
                 this.renderSetup(gameState);
             });
         });
+        markSetupCard(difficultyPanel);
         grid.appendChild(difficultyPanel);
 
         // Add "Create Custom Party" card at top
@@ -1245,6 +1416,7 @@ window.Game.UI.Screens = {
             createCard.classList.add('selected');
             this._showPartyCreator(gameState);
         });
+        markSetupCard(createCard);
         grid.appendChild(createCard);
 
         for (const party of gameState.parties) {
@@ -1268,6 +1440,7 @@ window.Game.UI.Screens = {
                 card.classList.add('selected');
                 this._showPartyDetail(party, gameState);
             });
+            markSetupCard(card);
             grid.appendChild(card);
         }
     },
@@ -1613,11 +1786,17 @@ window.Game.UI.Screens = {
                         <span class="info-value" style="color:${momentumColor}">${momentum > 0 ? '+' : ''}${momentum}</span>
                     </div>
                 </div>
-                <div class="player-party-badge" style="border-color:${playerParty.hexColor}">
-                    <span style="color:${playerParty.hexColor}">${playerParty.thaiName}</span>
-                    <span>Capital: ${playerParty.politicalCapital} | Grey: ${playerParty.greyMoney}</span>
+                <div class="campaign-party-block">
+                    <div class="player-party-badge" style="border-color:${playerParty.hexColor}">
+                        <span style="color:${playerParty.hexColor}">${playerParty.thaiName}</span>
+                        <span>Capital: ${playerParty.politicalCapital} | Grey: ${playerParty.greyMoney}</span>
+                    </div>
+                    <div class="campaign-notification-slot" id="campaign-notification-slot">
+                        <div class="campaign-notification-title">Notification Bar</div>
+                        <div class="campaign-notification-content">No notifications yet.</div>
+                    </div>
                 </div>
-                ${gameState.pendingCampaignEvent ? '<p style="font-size:0.75rem;color:var(--gold);margin-bottom:8px;">Weekly event pending: choose a response to continue.</p>' : ''}
+                ${gameState.pendingCampaignEvent ? '<p class="campaign-event-hint">Weekly event pending: choose a response to continue.</p>' : ''}
                 <button class="btn-primary btn-end-turn" id="btn-end-campaign-turn">
                     ${gameState.campaignTurn >= maxTurns ? '🗳️ Hold Election' : '➡️ End Week'}
                 </button>
@@ -1632,6 +1811,8 @@ window.Game.UI.Screens = {
                 </div>
             ` : ''}
         `;
+
+        this._syncCampaignNotificationBar();
 
         // Render action cards
         this._renderActionCards(gameState);
@@ -1655,23 +1836,27 @@ window.Game.UI.Screens = {
         if (!modal || !event) return;
 
         modal.innerHTML = `
-            <div class="modal-content" style="max-width:620px;">
-                <div class="modal-header">
+            <div class="modal-content campaign-event-modal">
+                <div class="modal-header campaign-event-header">
                     <h3>📰 Weekly Campaign Event</h3>
                 </div>
-                <div style="margin-bottom:10px;">
-                    <div style="font-family:var(--font-main);font-size:1rem;color:var(--gold);">${event.title}</div>
-                    <p style="font-size:0.85rem;color:var(--text-secondary);margin-top:4px;line-height:1.45;">${event.description}</p>
+                <div class="campaign-event-body">
+                    <div class="campaign-event-title">${event.title}</div>
+                    <p class="campaign-event-description">${event.description}</p>
                 </div>
-                <div class="promise-list" style="max-height:none;">
-                    ${event.options.map((opt, idx) => `
-                        <button class="btn-party-pick campaign-event-option" data-idx="${idx}" style="width:100%;border-left-color:var(--gold);margin-bottom:8px;">
-                            <div style="font-family:var(--font-main);font-size:0.92rem;">${opt.label}</div>
-                            <div style="font-size:0.75rem;color:var(--text-dim);margin-top:4px;">Estimated success: ${Math.round(opt.successChance * 100)}%</div>
-                        </button>
-                    `).join('')}
+                <div class="campaign-event-options">
+                    ${event.options.map((opt, idx) => {
+                        const successPct = Math.round((opt.successChance || 0) * 100);
+                        const toneClass = successPct >= 70 ? 'high' : (successPct >= 50 ? 'medium' : 'low');
+                        return `
+                            <button class="campaign-event-option ${toneClass}" data-idx="${idx}">
+                                <span class="campaign-event-option-label">${opt.label}</span>
+                                <span class="campaign-event-option-meta">Estimated success: <strong>${successPct}%</strong></span>
+                            </button>
+                        `;
+                    }).join('')}
                 </div>
-                <p style="font-size:0.72rem;color:var(--text-dim);margin-top:8px;">No skip option: campaign narrative moves every week.</p>
+                <p class="campaign-event-footnote">No skip option: campaign narrative moves every week.</p>
             </div>
         `;
         modal.classList.remove('hidden');
@@ -1723,6 +1908,26 @@ window.Game.UI.Screens = {
     _showCampaignProvinceMenu(provinceName, gameState) {
         const seats = window.Game.Data.PROVINCES[provinceName] || 0;
         const region = window.Game.Data.PROVINCE_REGION[provinceName] || 'Unknown';
+        const playerParty = gameState.parties.find(p => p.id === gameState.playerPartyId);
+
+        const actionCatalog = window.Game.Engine.Campaign.ACTIONS || {};
+        const actionRows = [
+            { key: 'rally', icon: '📢', label: 'Rally Here', hint: 'Boost local momentum and visibility.' },
+            { key: 'canvass', icon: '🚪', label: 'Canvass', hint: 'Focus one key district in this province.' },
+            { key: 'attackAd', icon: '⚔️', label: 'Attack Ad', hint: 'Pressure a rival party in this province.' },
+            { key: 'ioOperation', icon: '🕵️', label: 'IO Operation', hint: 'Deploy high-impact information ops.' },
+            { key: 'buySupport', icon: '🤝', label: 'Buy Support', hint: 'Convert support quickly using grey funds.' }
+        ].map(row => {
+            const action = actionCatalog[row.key];
+            if (!action) return null;
+            const canAffordAp = gameState.actionPoints >= action.apCost;
+            const canAffordGrey = !action.requiresGreyMoney || (playerParty && playerParty.greyMoney >= action.requiresGreyMoney);
+            return {
+                ...row,
+                action,
+                disabled: !canAffordAp || !canAffordGrey
+            };
+        }).filter(Boolean);
 
         const modal = document.getElementById('modal');
         modal.innerHTML = `
@@ -1734,12 +1939,24 @@ window.Game.UI.Screens = {
                 <div class="province-info">
                     <p>${region} Region • ${seats} Constituency Seats</p>
                 </div>
+                <div class="province-resources">
+                    <span class="province-resource province-resource-ap">AP: ${gameState.actionPoints}</span>
+                    <span class="province-resource province-resource-grey">Grey: ${playerParty ? playerParty.greyMoney : 0}</span>
+                </div>
                 <div class="province-actions">
-                    <button class="btn-small btn-rally" data-action="rally">📢 Rally Here (3 AP)</button>
-                    <button class="btn-small btn-canvass" data-action="canvass">🚪 Canvass (2 AP)</button>
-                    <button class="btn-small btn-attack" data-action="attackAd">⚔️ Attack Ad (4 AP)</button>
-                    <button class="btn-small btn-io" data-action="ioOperation">🕵️ IO Op (5 AP, 30💰)</button>
-                    <button class="btn-small btn-buy" data-action="buySupport">🤝 Buy Support (4 AP, 40💰)</button>
+                    ${actionRows.map(row => `
+                        <button class="province-action-btn ${row.disabled ? 'disabled' : ''}" data-action="${row.key}" ${row.disabled ? 'disabled' : ''}>
+                            <span class="province-action-icon">${row.icon}</span>
+                            <span class="province-action-main">
+                                <span class="province-action-title">${row.label}</span>
+                                <span class="province-action-hint">${row.hint}</span>
+                            </span>
+                            <span class="province-action-cost">
+                                <span class="province-ap-chip">${row.action.apCost} AP</span>
+                                ${row.action.requiresGreyMoney ? `<span class="province-grey-chip">${row.action.requiresGreyMoney} 💰</span>` : ''}
+                            </span>
+                        </button>
+                    `).join('')}
                 </div>
             </div>
         `;
@@ -1749,13 +1966,14 @@ window.Game.UI.Screens = {
             modal.classList.add('hidden');
         });
 
-        modal.querySelectorAll('.btn-small').forEach(btn => {
+        modal.querySelectorAll('.province-action-btn').forEach(btn => {
             btn.addEventListener('click', () => {
+            if (btn.disabled) return;
                 const actionKey = btn.dataset.action;
                 const action = window.Game.Engine.Campaign.ACTIONS[actionKey];
                 if (!action) return;
 
-                const playerParty = gameState.parties.find(p => p.id === gameState.playerPartyId);
+            const playerParty = gameState.parties.find(p => p.id === gameState.playerPartyId);
 
                 if (gameState.actionPoints < action.apCost) {
                     this.showNotification("Not enough AP!", 'error');
@@ -1827,29 +2045,39 @@ window.Game.UI.Screens = {
         const modal = document.getElementById('modal');
         const promises = window.Game.Data.PROMISE_TEMPLATES;
         const existing = (gameState.campaignPromises || []).map(p => p.promiseId);
+        const promiseAction = window.Game.Engine.Campaign.ACTIONS.promisePolicy;
 
         modal.innerHTML = `
-            <div class="modal-content mp-picker-modal">
-                <div class="modal-header">
+            <div class="modal-content promise-modal">
+                <div class="modal-header promise-modal-header">
                     <h3>📜 Choose a Policy Promise</h3>
                     <button class="modal-close" id="modal-close">✕</button>
                 </div>
-                <p style="font-size:0.8rem;color:var(--text-secondary);margin-bottom:12px;">
+                <p class="promise-modal-intro">
                     Making a promise boosts popularity NOW but you must pass the matching law in government or lose trust!
                 </p>
-                <div class="promise-list">
+                <div class="promise-modal-meta">
+                    <span class="promise-modal-chip">AP Cost: ${promiseAction ? promiseAction.apCost : 0}</span>
+                    <span class="promise-modal-chip">Already Promised: ${existing.length}</span>
+                </div>
+                <div class="promise-list promise-list-chooser">
                     ${promises.map(p => {
                         const alreadyPromised = existing.includes(p.promiseId);
+                        const boosts = Object.entries(p.popularityBoost || {}).map(([r, v]) => `${r} +${v}`).join(', ');
                         return `
                             <div class="promise-pick-card ${alreadyPromised ? 'disabled' : ''}" data-pid="${p.promiseId}">
-                                <div class="promise-icon">${p.icon}</div>
+                                <div class="promise-icon-wrap">
+                                    <div class="promise-icon">${p.icon}</div>
+                                </div>
                                 <div class="promise-info">
                                     <div class="promise-name">${p.name}</div>
                                     <div class="promise-eng">${p.engName}</div>
                                     <div class="promise-desc">${p.description}</div>
-                                    <div class="promise-regions">Boosts: ${Object.entries(p.popularityBoost).map(([r,v]) => `${r} +${v}`).join(', ')}</div>
+                                    <div class="promise-regions">Boosts: ${boosts}</div>
                                 </div>
-                                ${alreadyPromised ? '<span class="promise-done">✓ Promised</span>' : ''}
+                                ${alreadyPromised
+                                    ? '<span class="promise-done">✓ Promised</span>'
+                                    : '<span class="promise-pick-cta">Select</span>'}
                             </div>
                         `;
                     }).join('')}
@@ -2204,6 +2432,48 @@ window.Game.UI.Screens = {
         if (rejectOfferBtn) rejectOfferBtn.addEventListener('click', () => app.respondToCoalitionOffer(false));
     },
 
+    _animateCounterValue(node, targetValue, suffix = '') {
+        if (!(node instanceof HTMLElement)) return;
+        const target = Number(targetValue);
+        if (!Number.isFinite(target)) {
+            node.textContent = `${targetValue}${suffix}`;
+            return;
+        }
+
+        const previous = Number(node.dataset.counterCurrent);
+        const start = Number.isFinite(previous) ? previous : 0;
+        const decimals = Number.isInteger(target) ? 0 : 1;
+        const duration = 460;
+        const startedAt = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+
+        const tick = (now) => {
+            const elapsed = Math.max(0, now - startedAt);
+            const t = Math.min(1, elapsed / duration);
+            const eased = 1 - Math.pow(1 - t, 3);
+            const value = start + ((target - start) * eased);
+            node.textContent = `${value.toFixed(decimals)}${suffix}`;
+
+            if (t < 1) {
+                requestAnimationFrame(tick);
+            } else {
+                node.textContent = `${target.toFixed(decimals)}${suffix}`;
+                node.dataset.counterCurrent = String(target);
+            }
+        };
+
+        requestAnimationFrame(tick);
+    },
+
+    _runParliamentStatAnimations(scopeEl = document) {
+        if (!scopeEl || typeof scopeEl.querySelectorAll !== 'function') return;
+        const counters = scopeEl.querySelectorAll('[data-counter-value]');
+        counters.forEach((node) => {
+            const target = Number(node.getAttribute('data-counter-value'));
+            const suffix = node.getAttribute('data-counter-suffix') || '';
+            this._animateCounterValue(node, target, suffix);
+        });
+    },
+
     // ─── Update parliament stats header without full re-render ──────
     _updateParliamentStats(gameState) {
         const headerBar = document.querySelector('.parliament-header-bar');
@@ -2237,14 +2507,15 @@ window.Game.UI.Screens = {
             statsEl.innerHTML = `
                 <div class="parl-stat" style="border-color:${playerParty.hexColor}">
                     <span>${playerParty.thaiName}</span>
-                    <span>${isOpposition ? 'Role: Opposition' : `Coalition: ${coalitionSeats} seats`}</span>
+                    <span>${isOpposition ? 'Role: Opposition' : `Coalition: <span class="counter-inline" data-counter-value="${coalitionSeats}">${coalitionSeats}</span> seats`}</span>
                 </div>
-                <div class="parl-stat">Capital: <strong>${playerParty.politicalCapital}</strong></div>
-                <div class="parl-stat">Grey: <strong>${playerParty.greyMoney}</strong></div>
-                <div class="parl-stat danger-stat">Scandal: <strong>${playerParty.scandalMeter}</strong>/100</div>
+                <div class="parl-stat">Capital: <strong data-counter-value="${playerParty.politicalCapital}">${playerParty.politicalCapital}</strong></div>
+                <div class="parl-stat">Grey: <strong data-counter-value="${playerParty.greyMoney}">${playerParty.greyMoney}</strong></div>
+                <div class="parl-stat danger-stat">Scandal: <strong data-counter-value="${playerParty.scandalMeter}">${playerParty.scandalMeter}</strong>/100</div>
                 ${isOpposition ? '' : `<div class="parl-stat">Bills: <strong>${govBillStatus.used}/${govBillStatus.cap}</strong></div>`}
                 ${isOpposition ? '' : `<div class="parl-stat">PM Ops: <strong>${pmOpsStatus.used}/${pmOpsStatus.cap}</strong></div>`}
             `;
+            this._runParliamentStatAnimations(statsEl);
         }
     },
 
@@ -2319,6 +2590,12 @@ window.Game.UI.Screens = {
         const healthLabel = coalitionHealth
             ? (coalitionHealth.average >= 70 ? 'Stable' : coalitionHealth.average >= 45 ? 'Uneasy' : coalitionHealth.average >= 25 ? 'Strained' : 'Critical')
             : 'N/A';
+        const showCoalitionNegotiation = !isOpposition && !cabinetNeedsSetup && phaseInfo.phase === 'legislative';
+        const coalitionNegotiationPanel = showCoalitionNegotiation ? this._renderCoalitionNegotiationPanel(gameState) : '';
+        const coalitionDynamicsPanel = !isOpposition ? this._renderCoalitionDynamicsPanel(gameState) : '';
+        const coalitionToneClass = coalitionHealth
+            ? (coalitionHealth.average >= 70 ? 'coalition-tone-stable' : coalitionHealth.average >= 45 ? 'coalition-tone-uneasy' : coalitionHealth.average >= 25 ? 'coalition-tone-strained' : 'coalition-tone-critical')
+            : 'coalition-tone-unknown';
 
         main.innerHTML = `
             <div class="parliament-header-bar">
@@ -2329,14 +2606,14 @@ window.Game.UI.Screens = {
                 <div class="parl-stats">
                     <div class="parl-stat" style="border-color:${playerParty.hexColor}">
                         <span>${playerParty.thaiName}</span>
-                        <span>${isOpposition ? 'Role: Opposition' : `Coalition: ${coalitionSeats} seats`}</span>
+                        <span>${isOpposition ? 'Role: Opposition' : `Coalition: <span class="counter-inline" data-counter-value="${coalitionSeats}">${coalitionSeats}</span> seats`}</span>
                     </div>
-                    <div class="parl-stat">Capital: <strong>${playerParty.politicalCapital}</strong></div>
-                    <div class="parl-stat">Grey: <strong>${playerParty.greyMoney}</strong></div>
-                    <div class="parl-stat danger-stat">Scandal: <strong>${playerParty.scandalMeter}</strong>/100</div>
+                    <div class="parl-stat">Capital: <strong data-counter-value="${playerParty.politicalCapital}">${playerParty.politicalCapital}</strong></div>
+                    <div class="parl-stat">Grey: <strong data-counter-value="${playerParty.greyMoney}">${playerParty.greyMoney}</strong></div>
+                    <div class="parl-stat danger-stat">Scandal: <strong data-counter-value="${playerParty.scandalMeter}">${playerParty.scandalMeter}</strong>/100</div>
                     ${isOpposition ? '' : `<div class="parl-stat">Bills: <strong>${govBillStatus.used}/${govBillStatus.cap}</strong></div>`}
                     ${isOpposition ? '' : `<div class="parl-stat">PM Ops: <strong>${pmOpsStatus.used}/${pmOpsStatus.cap}</strong></div>`}
-                    ${!isOpposition && coalitionHealth ? `<div class="parl-stat" style="border-color:${healthColor}">Coalition: <strong style="color:${healthColor}">${coalitionHealth.average}%</strong> <span style="font-size:0.65rem;color:${healthColor}">${healthLabel}</span></div>` : ''}
+                    ${!isOpposition && coalitionHealth ? `<div class="parl-stat coalition-health-chip ${coalitionToneClass}" style="border-color:${healthColor}">Coalition: <strong style="color:${healthColor}" data-counter-value="${coalitionHealth.average}" data-counter-suffix="%">${coalitionHealth.average}%</strong> <span style="font-size:0.65rem;color:${healthColor}">${healthLabel}</span></div>` : ''}
                 </div>
             </div>
 
@@ -2370,10 +2647,14 @@ window.Game.UI.Screens = {
                 </div>
             ` : ''}
 
-            ${!isOpposition ? this._renderCoalitionDynamicsPanel(gameState) : ''}
             ${!isOpposition ? this._renderCabinetGradeAPanel(gameState) : ''}
+            ${showCoalitionNegotiation ? `
+                <div class="coalition-ops-row">
+                    <div class="coalition-ops-left">${coalitionNegotiationPanel}</div>
+                    <div class="coalition-ops-right">${coalitionDynamicsPanel}</div>
+                </div>
+            ` : coalitionDynamicsPanel}
             ${!isOpposition ? this._renderMinisterialScandalPanel(gameState) : ''}
-            ${(!isOpposition && !cabinetNeedsSetup && phaseInfo.phase === 'legislative') ? this._renderCoalitionNegotiationPanel(gameState) : ''}
             ${(!isOpposition && cabinetNeedsSetup) ? '<div class="cabinet-lock-note">Finalize Grade-A cabinet assignments to unlock question time, legislative action, and adjournment controls.</div>' : ''}
 
             ${(!isOpposition && !cabinetNeedsSetup && phaseInfo.phase === 'question_time') ? `
@@ -2425,13 +2706,14 @@ window.Game.UI.Screens = {
                                 const party = gameState.parties.find(p => p.id === pid);
                                 const statusColors = { loyal: '#4ade80', uneasy: '#d4a843', unhappy: '#f59e0b', critical: '#ef4444' };
                                 const statusColor = statusColors[data.status] || '#666';
+                                const statusClass = `status-${data.status || 'unknown'}`;
                                 const ministries = (gameState.coalitionMinistryOffers || {})[pid] || 0;
                                 return `
                                 <div class="coalition-partner-card" data-party-id="${pid}">
                                     <div class="partner-header">
                                         <span class="partner-dot" style="background:${party ? party.hexColor : '#666'}"></span>
                                         <span class="partner-name">${data.name}</span>
-                                        <span class="partner-status" style="color:${statusColor}">${data.status.toUpperCase()}</span>
+                                        <span class="partner-status ${statusClass}" style="color:${statusColor}">${data.status.toUpperCase()}</span>
                                     </div>
                                     <div class="satisfaction-bar-container">
                                         <div class="satisfaction-bar" style="width:${data.score}%;background:${statusColor}"></div>
@@ -2446,7 +2728,6 @@ window.Game.UI.Screens = {
                                                     <span class="demand-deadline">⏰ ${d.remainingSessions} session(s)</span>
                                                     ${d.capitalCost ? `<button class="btn-small btn-fulfill-demand" data-party-id="${pid}" data-demand-id="${d.instanceId}">Fulfill (${d.capitalCost} cap)</button>` : ''}
                                                     ${d.type === 'endorsement' ? `<button class="btn-small btn-fulfill-demand" data-party-id="${pid}" data-demand-id="${d.instanceId}">Fulfill (${d.capitalCost || 25} cap)</button>` : ''}
-                                                    ${d.type === 'ministry' ? `<button class="btn-small btn-demand-ministry" data-party-id="${pid}" data-demand-id="${d.instanceId}">Offer +1 Ministry (-30 cap)</button>` : ''}
                                                     ${d.type === 'ministry' ? `<button class="btn-small btn-demand-ministry" data-party-id="${pid}" data-demand-id="${d.instanceId}">Offer +1 Ministry (-30 cap)</button>` : ''}
                                                 </div>
                                             `).join('')}
@@ -2470,7 +2751,7 @@ window.Game.UI.Screens = {
             ${(isOpposition || (!cabinetNeedsSetup && phaseInfo.phase === 'legislative')) ? `
             <div class="parliament-grid">
                 <div class="parl-col parl-bills">
-                    <h3>${isOpposition ? 'Opposition Desk' : 'Propose a Bill'}</h3>
+                    <h3><span class="parl-sec-icon">${isOpposition ? '🧭' : '🧾'}</span>${isOpposition ? 'Opposition Desk' : 'Propose a Bill'}</h3>
                     <div class="bill-list" id="bill-list">
                         ${isOpposition ? `
                             <div class="placeholder-text">You are in opposition. Government bills are not under your control.</div>
@@ -2485,7 +2766,7 @@ window.Game.UI.Screens = {
                     </div>
                 </div>
                 <div class="parl-col parl-voting">
-                    <h3>Voting Chamber</h3>
+                    <h3><span class="parl-sec-icon">🗳️</span>Voting Chamber</h3>
                     <div id="voting-area">
                         ${isOpposition ? `
                             <p class="placeholder-text">Government bills awaiting your vote:</p>
@@ -2551,31 +2832,9 @@ window.Game.UI.Screens = {
                             </div>
                         ` : '<p class="placeholder-text">Select a bill to propose</p>'}
                     </div>
-                </div>
-                <div class="parl-col parl-shadow">
-                    <h3>${isOpposition ? 'Opposition Tools' : 'Shadow Politics'}</h3>
-                    ${isOpposition ? '' : `
-                        <div style="margin-bottom:12px;padding:10px;border:1px solid var(--border-subtle);border-radius:10px;background:rgba(255,255,255,0.02);">
-                            <h4 style="margin:0 0 8px 0;font-size:0.84rem;color:var(--gold);">Prime Minister Operations</h4>
-                            <div class="placeholder-text" style="margin-bottom:8px;">Session usage: <strong>${pmOpsStatus.used}/${pmOpsStatus.cap}</strong></div>
-                            <div style="display:grid;gap:6px;">
-                                <button class="btn-small" id="btn-pm-cabinet" ${pmOpsStatus.allowed ? '' : 'disabled'}>Cabinet Meeting (-38 cap)</button>
-                                <button class="btn-small" id="btn-pm-inspection" ${pmOpsStatus.allowed ? '' : 'disabled'}>Field Inspection (-30 cap)</button>
-                                <button class="btn-small" id="btn-pm-emergency" ${pmOpsStatus.allowed ? '' : 'disabled'}>Emergency Order (-55 cap)</button>
-                            </div>
-                            <div style="font-size:0.68rem;color:var(--text-dim);margin-top:6px;">Repeated use has diminishing returns.</div>
-                        </div>
-                    `}
-                    ${(!isOpposition && phaseInfo.phase === 'legislative') ? this._renderOppositionTacticsPanel(gameState) : ''}
-                    <div class="shadow-actions">
-                        <button class="btn-shadow" id="btn-siphon">Siphon Funds</button>
-                        <button class="btn-shadow" id="btn-io-deploy">Deploy IO</button>
-                        <button class="btn-shadow" id="btn-banana">Distribute Bananas</button>
-                    </div>
-                    <div id="shadow-result"></div>
 
-                    <h4 style="margin-top:20px">Actions</h4>
-                    <div style="font-size:0.68rem;color:var(--text-dim);margin-bottom:8px;">Shortcuts: Q = end Question Time, A = adjourn, Arrow keys = select action, Enter = activate.</div>
+                    <h4 style="margin-top:20px">🎛️ Actions</h4>
+                    <div style="font-size:0.68rem;color:var(--text-dim);margin-bottom:8px;">Shortcuts: Q = end Question Time, A = adjourn.</div>
                     <button class="btn-danger" id="btn-no-confidence">
                         ${isOpposition ? 'Launch No-Confidence Motion (-40 cap, 1 action)' : 'Test No-Confidence Survival'}
                     </button>
@@ -2594,8 +2853,32 @@ window.Game.UI.Screens = {
                         </button>
                     `}
                 </div>
+                <div class="parl-col parl-shadow">
+                    <h3><span class="parl-sec-icon">${isOpposition ? '📣' : '🕶️'}</span>${isOpposition ? 'Opposition Tools' : 'Shadow Politics'}</h3>
+                    <div class="shadow-actions">
+                        <button class="btn-shadow" id="btn-siphon">Siphon Funds</button>
+                        <button class="btn-shadow" id="btn-io-deploy">Deploy IO</button>
+                        <button class="btn-shadow" id="btn-banana">Distribute Bananas</button>
+                    </div>
+                    <div id="shadow-result"></div>
+                    ${isOpposition ? '' : `
+                        <div style="margin-bottom:12px;padding:10px;border:1px solid var(--border-subtle);border-radius:10px;background:rgba(255,255,255,0.02);">
+                            <h4 style="margin:0 0 8px 0;font-size:0.84rem;color:var(--gold);">Prime Minister Operations</h4>
+                            <div class="placeholder-text" style="margin-bottom:8px;">Session usage: <strong>${pmOpsStatus.used}/${pmOpsStatus.cap}</strong></div>
+                            <div style="display:grid;gap:6px;">
+                                <button class="btn-small" id="btn-pm-cabinet" ${pmOpsStatus.allowed ? '' : 'disabled'}>Cabinet Meeting (-38 cap)</button>
+                                <button class="btn-small" id="btn-pm-inspection" ${pmOpsStatus.allowed ? '' : 'disabled'}>Field Inspection (-30 cap)</button>
+                                <button class="btn-small" id="btn-pm-emergency" ${pmOpsStatus.allowed ? '' : 'disabled'}>Emergency Order (-55 cap)</button>
+                            </div>
+                            <div style="font-size:0.68rem;color:var(--text-dim);margin-top:6px;">Repeated use has diminishing returns.</div>
+                        </div>
+                    `}
+                    ${(!isOpposition && phaseInfo.phase === 'legislative') ? this._renderOppositionTacticsPanel(gameState) : ''}
+                </div>
             </div>` : ''}
         `;
+
+        this._runParliamentStatAnimations(main);
 
         if (!isOpposition) {
             this._renderBillList(gameState);
@@ -3145,7 +3428,16 @@ window.Game.UI.Screens = {
             const card = document.createElement('div');
             const canAfford = playerParty.politicalCapital >= tmpl.capitalCost;
             const isPromised = gameState.campaignPromises && gameState.campaignPromises.find(p => p.promiseId === tmpl.promiseId && !p.fulfilled);
-            card.className = `bill-card ${canAfford ? '' : 'disabled'} ${isPromised ? 'bill-promised' : ''}`;
+            const playerIdeology = Number.isFinite(playerParty.ideology) ? playerParty.ideology : 50;
+            const billIdeology = Number.isFinite(tmpl.ideologicalPosition) ? tmpl.ideologicalPosition : 50;
+            const ideologyDistance = Math.abs(playerIdeology - billIdeology);
+            const ideologyFit = ideologyDistance <= 18
+                ? 'match'
+                : ideologyDistance <= 32
+                ? 'lean'
+                : 'off';
+
+            card.className = `bill-card ${canAfford ? '' : 'disabled'} ${isPromised ? 'bill-promised' : ''} ${ideologyFit === 'match' ? 'bill-ideology-match' : ''} ${ideologyFit === 'lean' ? 'bill-ideology-lean' : ''}`;
 
             // Build effects preview
             let effectsHtml = '';
@@ -3160,7 +3452,11 @@ window.Game.UI.Screens = {
             }
 
             card.innerHTML = `
-                <div class="bill-name">${tmpl.name} ${isPromised ? '<span class="promise-badge">📜 PROMISED</span>' : ''}</div>
+                <div class="bill-name">${tmpl.name}
+                    ${isPromised ? '<span class="promise-badge">📜 PROMISED</span>' : ''}
+                    ${ideologyFit === 'match' ? '<span class="promise-badge ideology-badge ideology-match">🧭 IDEOLOGY MATCH</span>' : ''}
+                    ${ideologyFit === 'lean' ? '<span class="promise-badge ideology-badge ideology-lean">🧭 IDEOLOGY LEAN</span>' : ''}
+                </div>
                 <div class="bill-desc">${tmpl.description}</div>
                 ${effectsHtml}
                 <div class="bill-cost">Cost: ${tmpl.capitalCost} capital</div>
@@ -3363,19 +3659,29 @@ window.Game.UI.Screens = {
     },
     _showMPPicker(gameState, callback) {
         const modal = document.getElementById('modal');
-        const oppositionMPs = (gameState.seatedMPs || [])
-            .filter(mp => !gameState.coalitionPartyIds.includes(mp.partyId))
+        const coalitionIds = new Set(gameState.coalitionPartyIds || []);
+        const targetGovernmentSide = gameState.playerRole === 'opposition';
+        const targetMPs = (gameState.seatedMPs || [])
+            .filter(mp => {
+                if (!mp) return false;
+                const isCoalitionMP = coalitionIds.has(mp.partyId);
+                return targetGovernmentSide ? isCoalitionMP : !isCoalitionMP;
+            })
             .sort((a, b) => b.corruptionLevel - a.corruptionLevel)
             .slice(0, 20);
+        const targetLabel = targetGovernmentSide ? 'Government MP' : 'Opposition MP';
+        const emptyHint = targetGovernmentSide
+            ? 'No government MPs are available to target right now.'
+            : 'No opposition MPs are available to target right now.';
 
         modal.innerHTML = `
             <div class="modal-content mp-picker-modal">
                 <div class="modal-header">
-                    <h3>Select an Opposition MP</h3>
+                    <h3>Select a ${targetLabel}</h3>
                     <button class="modal-close" id="modal-close">✕</button>
                 </div>
                 <div class="mp-list">
-                    ${oppositionMPs.map(mp => {
+                    ${targetMPs.length === 0 ? `<div class="placeholder-text">${emptyHint}</div>` : targetMPs.map(mp => {
                         const party = gameState.parties.find(p => p.id === mp.partyId);
                         return `
                             <div class="mp-pick-card" data-mpid="${mp.id}">
@@ -3569,6 +3875,27 @@ window.Game.UI.Screens = {
 
     // ─── NOTIFICATIONS ──────
     showNotification(message, type = 'info') {
+        const isCampaignScreen = this.currentScreen === 'screen-campaign';
+        const duration = this._getNotificationDuration(message, isCampaignScreen);
+        if (isCampaignScreen) {
+            this._campaignNotificationState = {
+                message,
+                type,
+                expiresAt: Date.now() + duration
+            };
+            this._syncCampaignNotificationBar();
+
+            if (this._campaignNotificationTimer) {
+                clearTimeout(this._campaignNotificationTimer);
+                this._campaignNotificationTimer = 0;
+            }
+            this._campaignNotificationTimer = setTimeout(() => {
+                this._campaignNotificationState = null;
+                this._syncCampaignNotificationBar();
+            }, duration);
+            return;
+        }
+
         const existing = document.querySelector('.notification');
         if (existing) existing.remove();
 
@@ -3581,7 +3908,7 @@ window.Game.UI.Screens = {
         setTimeout(() => {
             notif.classList.remove('show');
             setTimeout(() => notif.remove(), 300);
-        }, 3000);
+        }, duration);
     },
 
     // ─── GAME OVER ──────────

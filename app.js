@@ -130,6 +130,10 @@ window.Game.App = {
         if (!state.previousElectionSeatTotals) state.previousElectionSeatTotals = {};
         if (!state.coalitionDemands) state.coalitionDemands = {};
         if (!state.coalitionMinistryOffers) state.coalitionMinistryOffers = {};
+        if (!state.oppositionPopularityYearTracker || !Number.isFinite(state.oppositionPopularityYearTracker.year)) {
+            state.oppositionPopularityYearTracker = { year: 1, gain: 0 };
+        }
+        if (!Number.isFinite(state.oppositionPopularityYearTracker.gain)) state.oppositionPopularityYearTracker.gain = 0;
         if (state.oppositionWalkoutPlan === undefined) state.oppositionWalkoutPlan = null;
         if (state.oppositionSplitPlan === undefined) state.oppositionSplitPlan = null;
         if (state.oppositionTacticsPlan === undefined) state.oppositionTacticsPlan = null;
@@ -2238,6 +2242,23 @@ window.Game.App = {
             setTimeout(() => {
                 window.Game.UI.Screens.showNotification(warning, 'error');
             }, promiseWarnings.indexOf(warning) * 1500);
+        }
+
+        if (this.state.playerRole === 'government' && typeof window.Game.Engine.Parliament.applyOppositionAccountabilityCycle === 'function') {
+            const accountability = window.Game.Engine.Parliament.applyOppositionAccountabilityCycle(this.state, stepYears);
+            if (accountability && accountability.applied && accountability.pressureIndex >= 55) {
+                const oppositionLift = accountability.oppositionGains
+                    .reduce((sum, row) => sum + Math.max(0, row.national || 0), 0);
+                const roundedLift = Math.round(oppositionLift * 10) / 10;
+                const govNational = Number(accountability.governmentDelta && accountability.governmentDelta.national) || 0;
+                const trustDrop = accountability.coalitionTrustDrop || 0;
+
+                let summary = `Opposition pressure escalated (${accountability.pressureBand}, index ${accountability.pressureIndex}).`;
+                if (roundedLift > 0) summary += ` Opposition momentum +${roundedLift} nationally.`;
+                if (govNational < 0) summary += ` Government accountability ${govNational}.`;
+                if (trustDrop > 0) summary += ` Coalition trust -${trustDrop}.`;
+                window.Game.UI.Screens.showNotification(summary, 'info');
+            }
         }
 
         for (const mp of this.state.seatedMPs) {

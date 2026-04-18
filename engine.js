@@ -1147,8 +1147,12 @@ window.Game.Engine.Parliament = {
     QUESTION_TIME_POP_SESSION_GAIN_CAP: 1.0,
     OPPOSITION_PLAN_BASE_TACTICS: 1,
     OPPOSITION_PLAN_MAX_TACTICS: 2,
+    OPPOSITION_PLAN_MAX_TACTICS_UNDER_PRESSURE: 3,
     OPPOSITION_PLAN_SECOND_TACTIC_BASE_CHANCE: 0.2,
     OPPOSITION_PLAN_SECOND_TACTIC_LATE_BONUS: 0.42,
+    OPPOSITION_PLAN_THIRD_TACTIC_BASE_CHANCE: 0.1,
+    OPPOSITION_PLAN_THIRD_TACTIC_PRESSURE_BONUS: 0.38,
+    OPPOSITION_PRESSURE_ACTIVATION_INDEX: 42,
     OPPOSITION_PLAN_STRENGTH_EARLY_PENALTY: 2,
     OPPOSITION_PLAN_STRENGTH_LATE_BONUS: 4,
     OPPOSITION_COUNTER_EARLY_BONUS: 0.08,
@@ -1568,6 +1572,324 @@ window.Game.Engine.Parliament = {
         return Math.max(0, Math.min(1, (year - 1) / 3));
     },
 
+    _getOppositionSeatShare(gameState) {
+        const totalSeats = (gameState && gameState.electionResults && gameState.electionResults.totalSeats) || {};
+        const representedSeats = Object.values(totalSeats)
+            .reduce((sum, seats) => sum + (Number.isFinite(seats) ? seats : 0), 0);
+        const houseSeats = representedSeats > 0 ? representedSeats : 500;
+        const coalitionSeats = (gameState && Array.isArray(gameState.coalitionPartyIds) ? gameState.coalitionPartyIds : [])
+            .reduce((sum, pid) => sum + (totalSeats[pid] || 0), 0);
+        const oppositionSeats = Math.max(0, houseSeats - coalitionSeats);
+        return Math.max(0, Math.min(1, oppositionSeats / houseSeats));
+    },
+
+    _getOppositionPopularityTracker(gameState) {
+        const currentYear = this._getPopularityYear(gameState);
+        if (!gameState.oppositionPopularityYearTracker || gameState.oppositionPopularityYearTracker.year !== currentYear) {
+            gameState.oppositionPopularityYearTracker = { year: currentYear, gain: 0 };
+        }
+        if (!Number.isFinite(gameState.oppositionPopularityYearTracker.gain)) {
+            gameState.oppositionPopularityYearTracker.gain = 0;
+        }
+        return gameState.oppositionPopularityYearTracker;
+    },
+
+    _getParliamentRegionKeys() {
+        const dataRegions = window.Game && window.Game.Data ? window.Game.Data.REGIONS : null;
+        const keys = dataRegions ? Object.keys(dataRegions) : [];
+        if (keys.length > 0) return keys;
+        return ['Bangkok', 'Central', 'North', 'Northeast', 'East', 'West', 'South'];
+    },
+
+    _getPartyPressureRegion(party) {
+        const fallback = this._getParliamentRegionKeys();
+        if (!party || !party.regionalPopMod || typeof party.regionalPopMod !== 'object') {
+            return fallback[Math.floor(Math.random() * fallback.length)];
+        }
+
+        let bestRegion = null;
+        let bestValue = -Infinity;
+        for (const [region, value] of Object.entries(party.regionalPopMod)) {
+            const numeric = Number.isFinite(value) ? value : 0;
+            if (numeric > bestValue) {
+                bestValue = numeric;
+                bestRegion = region;
+            }
+        }
+
+        if (bestRegion) return bestRegion;
+        return fallback[Math.floor(Math.random() * fallback.length)];
+    },
+
+    getOppositionPressureModel(gameState) {
+        if (!gameState) {
+            return {
+                pressureIndex: 0,
+                pressureNorm: 0,
+                pressureBand: 'stable',
+                escalation: 0,
+                seatShare: 0.5,
+                secondTacticBonus: 0,
+                thirdTacticChance: 0,
+                tacticStrengthBonus: 0,
+                severityBonus: 0,
+                counterPenalty: 0,
+                components: {}
+            };
+        }
+
+        const playerParty = (gameState.parties || []).find(p => p.id === gameState.playerPartyId) || null;
+        const crisisEngine = window.Game && window.Game.Engine ? window.Game.Engine.Crisis : null;
+        const computedStress = crisisEngine && typeof crisisEngine.calculateGovernmentStress === 'function'
+            ? crisisEngine.calculateGovernmentStress(gameState)
+            : null;
+        const stress = computedStress || gameState.governmentStress || { total: 0 };
+        const health = this.getCoalitionHealth(gameState);
+
+        const outcomes = Array.isArray(gameState.governmentBillOutcomeHistory)
+            ? gameState.governmentBillOutcomeHistory
+            : [];
+        const recentOutcomes = outcomes.slice(-8);
+        const failedVotes = recentOutcomes.filter(v => v === false).length;
+        const failureRate = recentOutcomes.length > 0 ? (failedVotes / recentOutcomes.length) : 0.2;
+
+        const promises = Array.isArray(gameState.campaignPromises) ? gameState.campaignPromises : [];
+        const failedPromises = promises.filter(p => p && p.failed).length;
+        const overduePromises = promises.filter(p =>
+            p && !p.fulfilled && !p.failed && (gameState.parliamentYear || 1) >= 3
+        ).length;
+        const promiseLoad = promises.length > 0
+            ? Math.min(1, (failedPromises + (overduePromises * 0.6)) / promises.length)
+            : 0;
+
+        const stressLoad = Math.max(0, Math.min(1, (Number(stress.total) || 0) / 9));
+        const scandalLoad = Math.max(0, Math.min(1, (playerParty ? (playerParty.scandalMeter || 0) : 0) / 100));
+        const failedBillLoad = Math.max(0, Math.min(1, failureRate));
+        const streakLoad = Math.max(0, Math.min(1, (gameState.governmentFailedBillStreak || 0) / 4));
+        const coalitionLoad = Math.max(0, Math.min(1, (55 - (health.average || 50)) / 35));
+        const criticalPartnerLoad = Math.max(0, Math.min(1, (30 - (health.lowest || 50)) / 30));
+
+        let pressureIndex =
+            (stressLoad * 27) +
+            (scandalLoad * 21) +
+            (failedBillLoad * 19) +
+            (streakLoad * 11) +
+            (coalitionLoad * 12) +
+            (criticalPartnerLoad * 5) +
+            (promiseLoad * 5);
+
+        const escalation = this._getOppositionEscalation(gameState);
+        const seatShare = this._getOppositionSeatShare(gameState);
+        pressureIndex += (escalation * 4) + (Math.max(0, seatShare - 0.42) * 8);
+
+        pressureIndex = Math.max(0, Math.min(100, Math.round(pressureIndex)));
+        const pressureNorm = Math.max(0, Math.min(1, pressureIndex / 100));
+
+        let pressureBand = 'stable';
+        if (pressureIndex >= 70) pressureBand = 'critical';
+        else if (pressureIndex >= 55) pressureBand = 'fragile';
+        else if (pressureIndex >= this.OPPOSITION_PRESSURE_ACTIVATION_INDEX) pressureBand = 'contested';
+
+        const secondTacticBonus = Math.max(0, Math.min(0.34, (pressureIndex - 38) / 100));
+        const thirdTacticChance = Math.max(0, Math.min(0.42, (pressureIndex - 62) / 85));
+        const tacticStrengthBonus = Math.max(0, Math.min(9,
+            Math.round((pressureNorm * 7) + (seatShare * 2) + (escalation * 2) - 1)
+        ));
+        const severityBonus = pressureIndex >= 68 ? 1 : 0;
+        const counterPenalty = Math.max(0, Math.min(0.1, (pressureIndex - 50) / 300));
+
+        return {
+            pressureIndex,
+            pressureNorm,
+            pressureBand,
+            escalation,
+            seatShare,
+            secondTacticBonus,
+            thirdTacticChance,
+            tacticStrengthBonus,
+            severityBonus,
+            counterPenalty,
+            components: {
+                stressLoad,
+                scandalLoad,
+                failedBillLoad,
+                streakLoad,
+                coalitionLoad,
+                criticalPartnerLoad,
+                promiseLoad
+            }
+        };
+    },
+
+    applyOppositionAccountabilityCycle(gameState, stepYears = 1) {
+        const noOp = {
+            applied: false,
+            pressureIndex: 0,
+            pressureBand: 'stable',
+            governmentDelta: { national: 0, regional: {} },
+            oppositionGains: [],
+            coalitionTrustDrop: 0,
+            yearlyGainUsed: 0,
+            yearlyGainCap: 0,
+            reason: 'not_applicable'
+        };
+        if (!gameState || gameState.playerRole === 'opposition') return noOp;
+
+        const pressureModel = this.getOppositionPressureModel(gameState);
+        const pressureIndex = pressureModel.pressureIndex;
+        const activationIndex = this.OPPOSITION_PRESSURE_ACTIVATION_INDEX;
+        if (pressureIndex < activationIndex) {
+            return {
+                ...noOp,
+                pressureIndex,
+                pressureBand: pressureModel.pressureBand,
+                reason: 'pressure_below_threshold'
+            };
+        }
+
+        const totalSeats = (gameState.electionResults && gameState.electionResults.totalSeats) || {};
+        const coalitionIds = new Set(gameState.coalitionPartyIds || []);
+        const oppositionRows = (gameState.parties || [])
+            .filter(p => !coalitionIds.has(p.id))
+            .map(p => ({ party: p, seats: totalSeats[p.id] || 0 }))
+            .filter(row => row.seats > 0)
+            .sort((a, b) => b.seats - a.seats)
+            .slice(0, 3);
+        if (oppositionRows.length === 0) {
+            return {
+                ...noOp,
+                pressureIndex,
+                pressureBand: pressureModel.pressureBand,
+                reason: 'no_opposition_seats'
+            };
+        }
+
+        const tracker = this._getOppositionPopularityTracker(gameState);
+        const stepScale = Math.max(0.5, Math.min(1.25, Number.isFinite(stepYears) ? stepYears : 1));
+        const yearlyGainCap = this._roundPopularity(2.2 + (pressureModel.pressureNorm * 3.2));
+        const remainingYearGain = Math.max(0, this._roundPopularity(yearlyGainCap - (tracker.gain || 0)));
+        if (remainingYearGain <= 0.05) {
+            return {
+                ...noOp,
+                pressureIndex,
+                pressureBand: pressureModel.pressureBand,
+                yearlyGainUsed: tracker.gain || 0,
+                yearlyGainCap,
+                reason: 'yearly_gain_capped'
+            };
+        }
+
+        const cycleTargetGain = this._roundPopularity((0.7 + (pressureModel.pressureNorm * 1.6)) * stepScale);
+        let gainBudget = Math.max(0, Math.min(remainingYearGain, cycleTargetGain));
+        const oppositionSeatTotal = oppositionRows.reduce((sum, row) => sum + row.seats, 0);
+
+        const oppositionGains = [];
+        let gainedThisCycle = 0;
+        for (let i = 0; i < oppositionRows.length && gainBudget > 0.05; i++) {
+            const row = oppositionRows[i];
+            const seatWeight = oppositionSeatTotal > 0
+                ? (row.seats / oppositionSeatTotal)
+                : (1 / oppositionRows.length);
+            let requestedNational = this._roundPopularity((cycleTargetGain * seatWeight) + (i === 0 ? 0.15 : 0));
+            requestedNational = Math.max(0.2, requestedNational);
+            requestedNational = Math.min(gainBudget, requestedNational);
+
+            const focusRegion = this._getPartyPressureRegion(row.party);
+            const requestedRegional = requestedNational >= 0.45
+                ? this._roundPopularity(Math.min(1, requestedNational * 0.75))
+                : 0;
+
+            const impact = this.applyPopularityImpact(
+                gameState,
+                row.party.id,
+                {
+                    national: requestedNational,
+                    regions: requestedRegional > 0 ? { [focusRegion]: requestedRegional } : {}
+                },
+                {
+                    sourceKey: `opposition_accountability_${gameState.sessionNumber || 1}_${row.party.id}`,
+                    skill: Math.min(0.84, 0.56 + (seatWeight * 0.28) + (pressureModel.pressureNorm * 0.08)),
+                    nationalMaxDelta: 1.2,
+                    annualGainBudget: 4.5,
+                    annualLossBudget: 6.5,
+                    regionalMaxDelta: 1.2,
+                    useNoise: false
+                }
+            );
+
+            const nationalApplied = Number(impact.national) || 0;
+            const positiveGain = Math.max(0, nationalApplied);
+            if (positiveGain > 0) {
+                gainedThisCycle = this._roundPopularity(gainedThisCycle + positiveGain);
+                gainBudget = Math.max(0, this._roundPopularity(gainBudget - positiveGain));
+            }
+
+            oppositionGains.push({
+                partyId: row.party.id,
+                national: nationalApplied,
+                regional: { ...(impact.regional || {}) }
+            });
+        }
+
+        tracker.gain = this._roundPopularity((tracker.gain || 0) + gainedThisCycle);
+
+        const playerParty = (gameState.parties || []).find(p => p.id === gameState.playerPartyId) || null;
+        let governmentDelta = { national: 0, regional: {} };
+        if (playerParty && pressureIndex >= 48) {
+            const requestedPenalty = this._roundPopularity((0.25 + (pressureModel.pressureNorm * 0.95)) * stepScale);
+            const focusRegion = this._getPartyPressureRegion(playerParty);
+            const regionalPenalty = requestedPenalty >= 0.7
+                ? -this._roundPopularity(Math.min(1, requestedPenalty * 0.65))
+                : 0;
+            const impact = this.applyPopularityImpact(
+                gameState,
+                playerParty.id,
+                {
+                    national: -Math.min(1.4, requestedPenalty),
+                    regions: regionalPenalty !== 0 ? { [focusRegion]: regionalPenalty } : {}
+                },
+                {
+                    sourceKey: `government_accountability_${gameState.sessionNumber || 1}`,
+                    skill: 0.38,
+                    nationalMaxDelta: 1.5,
+                    annualGainBudget: 4.5,
+                    annualLossBudget: 8.5,
+                    regionalMaxDelta: 1.2,
+                    useNoise: false
+                }
+            );
+            governmentDelta = { national: impact.national, regional: { ...(impact.regional || {}) } };
+        }
+
+        let coalitionTrustDrop = 0;
+        if (gameState.coalitionSatisfaction && pressureIndex >= 55) {
+            coalitionTrustDrop = Math.min(2, Math.max(1, Math.round((pressureIndex - 52) / 25)));
+            for (const pid of Object.keys(gameState.coalitionSatisfaction)) {
+                if (pid === gameState.playerPartyId) continue;
+                const sat = gameState.coalitionSatisfaction[pid];
+                if (!sat) continue;
+                sat.score = Math.max(5, Math.min(95, (sat.score || 50) - coalitionTrustDrop));
+            }
+            this.recordCoalitionSatisfactionSnapshot(gameState);
+        }
+
+        const applied = oppositionGains.some(g => g.national !== 0) ||
+            governmentDelta.national !== 0 ||
+            coalitionTrustDrop > 0;
+
+        return {
+            applied,
+            pressureIndex,
+            pressureBand: pressureModel.pressureBand,
+            governmentDelta,
+            oppositionGains,
+            coalitionTrustDrop,
+            yearlyGainUsed: tracker.gain || 0,
+            yearlyGainCap,
+            reason: applied ? 'applied' : 'no_effect'
+        };
+    },
+
     generateOppositionTacticsPlan(gameState) {
         if (!gameState || gameState.playerRole === 'opposition') return { sessionNumber: gameState?.sessionNumber || 1, tactics: [] };
 
@@ -1579,21 +1901,38 @@ window.Game.Engine.Parliament = {
 
         const health = this.getCoalitionHealth(gameState);
         const escalation = this._getOppositionEscalation(gameState);
+        const pressureModel = this.getOppositionPressureModel(gameState);
         const templates = this._getOppositionTacticTemplates().sort(() => Math.random() - 0.5);
         let tacticCount = this.OPPOSITION_PLAN_BASE_TACTICS;
+        const maxTactics = pressureModel.thirdTacticChance > 0.05
+            ? this.OPPOSITION_PLAN_MAX_TACTICS_UNDER_PRESSURE
+            : this.OPPOSITION_PLAN_MAX_TACTICS;
         const secondTacticChance = this.OPPOSITION_PLAN_SECOND_TACTIC_BASE_CHANCE +
-            (escalation * this.OPPOSITION_PLAN_SECOND_TACTIC_LATE_BONUS);
-        const instabilityThreshold = 46 + Math.round(escalation * 4);
+            (escalation * this.OPPOSITION_PLAN_SECOND_TACTIC_LATE_BONUS) +
+            pressureModel.secondTacticBonus;
+        const instabilityThreshold = 46 + Math.round(escalation * 4) + Math.round(pressureModel.pressureNorm * 5);
         if (health.average < instabilityThreshold || Math.random() < secondTacticChance) {
-            tacticCount = this.OPPOSITION_PLAN_MAX_TACTICS;
+            tacticCount = Math.min(2, maxTactics);
+            if (maxTactics > 2) {
+                const thirdTacticChance = Math.max(0, Math.min(0.85,
+                    this.OPPOSITION_PLAN_THIRD_TACTIC_BASE_CHANCE +
+                    (pressureModel.thirdTacticChance * this.OPPOSITION_PLAN_THIRD_TACTIC_PRESSURE_BONUS) +
+                    (health.lowest < 30 ? 0.08 : 0)
+                ));
+                if (Math.random() < thirdTacticChance) {
+                    tacticCount = 3;
+                }
+            }
         }
 
-        const selected = templates.slice(0, Math.max(1, Math.min(this.OPPOSITION_PLAN_MAX_TACTICS, tacticCount)));
+        const selected = templates.slice(0, Math.max(1, Math.min(maxTactics, tacticCount)));
         const tactics = selected.map((tpl, idx) => {
             const instabilityBonus = health.average < 45 ? (1 + Math.round(escalation * 2)) : 0;
+            const pressureStrengthBonus = pressureModel.tacticStrengthBonus;
             let severity = tpl.severity;
             if (health.lowest < 25 && escalation >= 0.4) severity += 1;
             if (escalation >= 0.75 && Math.random() < 0.35) severity += 1;
+            if (pressureModel.severityBonus > 0 && Math.random() < 0.45) severity += pressureModel.severityBonus;
             if (escalation < 0.35 && tpl.scope === 'no_confidence') severity -= 1;
             severity = Math.max(1, Math.min(3, severity));
 
@@ -1603,7 +1942,7 @@ window.Game.Engine.Parliament = {
                 (-this.OPPOSITION_PLAN_STRENGTH_EARLY_PENALTY) +
                 (escalation * (this.OPPOSITION_PLAN_STRENGTH_EARLY_PENALTY + this.OPPOSITION_PLAN_STRENGTH_LATE_BONUS))
             );
-            const strength = Math.max(3, Math.min(28, baseStrength + instabilityBonus + termBias));
+            const strength = Math.max(3, Math.min(32, baseStrength + instabilityBonus + termBias + pressureStrengthBonus));
 
             return {
                 instanceId: `${tpl.id}_${currentSession}_${idx}_${Math.floor(Math.random() * 10000)}`,
@@ -1622,6 +1961,8 @@ window.Game.Engine.Parliament = {
 
         gameState.oppositionTacticsPlan = {
             sessionNumber: currentSession,
+            pressureIndex: pressureModel.pressureIndex,
+            pressureBand: pressureModel.pressureBand,
             tactics
         };
 
@@ -1736,11 +2077,13 @@ window.Game.Engine.Parliament = {
         playerParty.politicalCapital -= maneuver.capitalCost;
         const health = this.getCoalitionHealth(gameState);
         const escalation = this._getOppositionEscalation(gameState);
+        const pressureModel = this.getOppositionPressureModel(gameState);
         let chance = maneuver.baseChance;
         chance += maneuver.favoredScope === tactic.scope ? 0.12 : -0.06;
         chance -= (tactic.severity || 1) * 0.08;
         chance += (1 - escalation) * this.OPPOSITION_COUNTER_EARLY_BONUS;
         chance -= escalation * this.OPPOSITION_COUNTER_LATE_PENALTY;
+        chance -= pressureModel.counterPenalty;
         if (health.average >= 65) chance += 0.06;
         if (health.average < 40) chance -= 0.06;
         chance = Math.max(0.15, Math.min(0.9, chance));
@@ -3604,6 +3947,19 @@ window.Game.Engine.Shadow = {
         const mp = gameState.seatedMPs.find(m => m.id === targetMPId);
         if (!mp) return { success: false, msg: "MP not found." };
         if (mp.partyId === gameState.playerPartyId) return { success: false, msg: "Can't banana your own MP!" };
+
+        const coalitionIds = new Set(gameState.coalitionPartyIds || []);
+        const targetGovernmentSide = gameState.playerRole === 'opposition';
+        const isGovernmentMP = coalitionIds.has(mp.partyId);
+        const targetAllowed = targetGovernmentSide ? isGovernmentMP : !isGovernmentMP;
+        if (!targetAllowed) {
+            return {
+                success: false,
+                msg: targetGovernmentSide
+                    ? "As opposition, you can only banana government-side MPs."
+                    : "As government, you can only banana opposition MPs."
+            };
+        }
 
         if (mp.corruptionLevel < 40) {
             pp.greyMoney -= 30; // Wasted some money trying
