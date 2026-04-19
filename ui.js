@@ -36,6 +36,12 @@ window.Game.UI.Map = {
         return null;
     },
 
+    _getPanTranslateExtent(width, height) {
+        const w = Math.max(320, Number(width) || 320);
+        const h = Math.max(280, Number(height) || 280);
+        return [[-w * 2, -h * 2], [w * 3, h * 3]];
+    },
+
     /**
      * Move the map SVG to a different container element.
      */
@@ -88,8 +94,9 @@ window.Game.UI.Map = {
             .attr('transform', d => `translate(${this.path.centroid(d)})`);
 
         if (this._zoom && this.svg) {
-            this._zoom.translateExtent([[0, 0], [width, height]]);
-            this.svg.call(this._zoom.transform, d3.zoomIdentity);
+            this._zoom.translateExtent(this._getPanTranslateExtent(width, height));
+            const current = d3.zoomTransform(this.svg.node());
+            this.svg.call(this._zoom.transform, current || d3.zoomIdentity);
         }
     },
 
@@ -121,7 +128,7 @@ window.Game.UI.Map = {
         // Set up zoom behavior
         this._zoom = d3.zoom()
             .scaleExtent([1, 8])
-            .translateExtent([[0, 0], [width, height]])
+            .translateExtent(this._getPanTranslateExtent(width, height))
             .on('zoom', (event) => {
                 this._mapGroup.attr('transform', event.transform);
             });

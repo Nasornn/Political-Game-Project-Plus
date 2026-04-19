@@ -1021,6 +1021,8 @@ body {
 
 #map-container svg {
     cursor: grab;
+    touch-action: none;
+    user-select: none;
 }
 
 #map-container svg:active {
