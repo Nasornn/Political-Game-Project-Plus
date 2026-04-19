@@ -74,6 +74,12 @@ body {
     box-shadow: var(--shadow-md);
 }
 
+#screen-parliament:not(.hidden) ~ #meta-toolbar {
+    left: auto;
+    right: calc(var(--safe-right) + 12px);
+    top: calc(var(--safe-top) + 10px);
+}
+
 #meta-toolbar .btn-small {
     width: auto;
     margin: 0;
