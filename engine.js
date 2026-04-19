@@ -16,6 +16,11 @@ window.Game.Engine.Election = {
         const parties = gameState.parties;
         const districts = gameState.districts;
         const partyMPs = gameState.partyMPs; // partyId → MP[]
+        const roll = (gameState && typeof gameState.random === 'function') ? gameState.random : Math.random;
+        const configuredVolatility = Number(gameState && gameState.electionVolatility);
+        const randomSwingRange = Number.isFinite(configuredVolatility)
+            ? Math.max(0, Math.min(10, configuredVolatility))
+            : 3.5;
 
         // Reset
         const results = {
@@ -83,8 +88,8 @@ window.Game.Engine.Election = {
                 const localLeaning = district.localLeanings[party.id] || 0;
                 score += localLeaning;
 
-                // Small random factor (±2) to prevent perfect determinism
-                score += (Math.random() * 4 - 2);
+                // Add per-party district volatility so repeated runs are less static.
+                score += (roll() * (randomSwingRange * 2) - randomSwingRange);
 
                 // Floor at 0
                 score = Math.max(0, score);
@@ -92,6 +97,9 @@ window.Game.Engine.Election = {
 
                 if (score > bestScore) {
                     bestScore = score;
+                    bestParty = party.id;
+                } else if (Math.abs(score - bestScore) <= 1e-9 && roll() < 0.5) {
+                    // Break exact ties randomly instead of always preferring earlier party order.
                     bestParty = party.id;
                 }
             }
@@ -136,12 +144,14 @@ window.Game.Engine.Election = {
             totalValidVotes += results.nationalPopularVote[p.id];
         }
 
-        const seatQuota = totalValidVotes / 100;
+        const seatQuota = totalValidVotes > 0 ? (totalValidVotes / 100) : 0;
         let assignedListSeats = 0;
 
         const partyRemainders = [];
         for (const p of parties) {
-            const exactSeats = results.nationalPopularVote[p.id] / seatQuota;
+            const exactSeats = seatQuota > 0
+                ? (results.nationalPopularVote[p.id] / seatQuota)
+                : 0;
             const floorSeats = Math.floor(exactSeats);
             const remainder = exactSeats - floorSeats;
 
@@ -162,10 +172,10 @@ window.Game.Engine.Election = {
         let remainingSeats = 100 - assignedListSeats;
         partyRemainders.sort((a, b) => b.remainder - a.remainder);
 
-        for (let i = 0; i < remainingSeats && i < partyRemainders.length; i++) {
-            const pid = partyRemainders[i].partyId;
+        for (let i = 0; i < remainingSeats && partyRemainders.length > 0; i++) {
+            const pid = partyRemainders[i % partyRemainders.length].partyId;
             results.partyListSeats[pid]++;
-            results.partyListDetail[pid].bonusSeats = 1;
+            results.partyListDetail[pid].bonusSeats += 1;
         }
 
         // ── Total seats ─────────────────────────────────────────

@@ -146,6 +146,10 @@ window.Game.App = {
             parliamentProgressByPlayerId: {},
             parliamentWaitingForOthers: false,
             parliamentBarrierComplete: false,
+            parliamentSessionWaitingForOthers: false,
+            parliamentMySessionNumber: 1,
+            parliamentMinSessionNumber: 1,
+            parliamentMaxSessionNumber: 1,
             chatMessages: [],
             pendingCoalitionOffers: [],
             sharedGovernmentBillsUsed: 0,
@@ -600,6 +604,12 @@ window.Game.App = {
             const used = Math.max(0, Math.floor(Number(payload.used) || 0));
             this.state.multiplayer.sharedGovernmentBillSession = sessionNumber;
             this.state.multiplayer.sharedGovernmentBillsUsed = used;
+            if (Number.isFinite(Number(payload.minSessionNumber))) {
+                this.state.multiplayer.parliamentMinSessionNumber = Math.max(1, Math.floor(Number(payload.minSessionNumber)));
+            }
+            if (Number.isFinite(Number(payload.maxSessionNumber))) {
+                this.state.multiplayer.parliamentMaxSessionNumber = Math.max(1, Math.floor(Number(payload.maxSessionNumber)));
+            }
             this.state.multiplayer.lastOrder = Number(payload.order || this.state.multiplayer.lastOrder || 0);
             this.state.multiplayer.lastUpdatedAt = Date.now();
             if (this.currentState === this.STATES.STATE_PARLIAMENT_TERM) {
@@ -820,11 +830,14 @@ window.Game.App = {
         }
 
         if (room.parliament && room.parliament.sharedBillUsageBySession) {
-            const localSession = Math.max(1, Math.floor(Number(this.state.sessionNumber) || 1));
+            const roomMinSession = Math.max(1, Math.floor(Number(room.parliament.minSessionNumber) || 1));
+            const roomMaxSession = Math.max(roomMinSession, Math.floor(Number(room.parliament.maxSessionNumber) || roomMinSession));
             const usageMap = room.parliament.sharedBillUsageBySession;
-            const byCurrentSession = Number(usageMap[localSession] || 0);
-            mp.sharedGovernmentBillSession = localSession;
+            const byCurrentSession = Number(usageMap[roomMinSession] || 0);
+            mp.sharedGovernmentBillSession = roomMinSession;
             mp.sharedGovernmentBillsUsed = Math.max(0, Math.floor(byCurrentSession));
+            mp.parliamentMinSessionNumber = roomMinSession;
+            mp.parliamentMaxSessionNumber = roomMaxSession;
 
             if (Array.isArray(room.parliament.pendingGovernmentBills)) {
                 this.state.governmentBillQueue = room.parliament.pendingGovernmentBills.map(row => ({ ...row }));
@@ -933,22 +946,30 @@ window.Game.App = {
         let myCompleted = false;
         let hasMyRow = false;
         let allDone = progressList.length > 0;
+        let mySessionNumber = Math.max(1, Math.floor(Number(this.state.sessionNumber) || 1));
+        let minSessionNumber = Number.POSITIVE_INFINITY;
+        let maxSessionNumber = 1;
 
         for (const row of progressList) {
             if (!row || !row.playerId) continue;
             const completed = !!row.completed;
+            const sessionNumber = Math.max(1, Math.floor(Number(row.sessionNumber) || 1));
             map[row.playerId] = {
                 name: row.name || row.playerId,
                 seat: row.seat || null,
                 completed,
                 connected: row.connected !== false,
                 role: row.role || null,
-                sessionNumber: Math.max(1, Math.floor(Number(row.sessionNumber) || 1))
+                sessionNumber
             };
+
+            minSessionNumber = Math.min(minSessionNumber, sessionNumber);
+            maxSessionNumber = Math.max(maxSessionNumber, sessionNumber);
 
             if (row.playerId === mp.playerId) {
                 myCompleted = completed;
                 hasMyRow = true;
+                mySessionNumber = sessionNumber;
             }
 
             if (!completed) allDone = false;
@@ -959,10 +980,20 @@ window.Game.App = {
             allDone = false;
         }
 
+        if (!Number.isFinite(minSessionNumber)) {
+            minSessionNumber = mySessionNumber;
+            maxSessionNumber = mySessionNumber;
+        }
+
         mp.parliamentProgressByPlayerId = map;
         const inParliamentRoom = String(mp.roomState || '').toLowerCase() === 'parliament';
+        const sessionWaiting = inParliamentRoom && hasMyRow && mySessionNumber > minSessionNumber;
         mp.parliamentWaitingForOthers = inParliamentRoom && hasMyRow && myCompleted && !allDone;
         mp.parliamentBarrierComplete = inParliamentRoom && allDone;
+        mp.parliamentSessionWaitingForOthers = sessionWaiting;
+        mp.parliamentMySessionNumber = mySessionNumber;
+        mp.parliamentMinSessionNumber = minSessionNumber;
+        mp.parliamentMaxSessionNumber = Math.max(minSessionNumber, maxSessionNumber);
         mp.lastUpdatedAt = Date.now();
     },
 
@@ -970,6 +1001,12 @@ window.Game.App = {
         if (!this.isMultiplayerActive()) return false;
         const mp = this.state.multiplayer || {};
         return String(mp.roomState || '').toLowerCase() === 'parliament' && !!mp.parliamentWaitingForOthers;
+    },
+
+    _isMultiplayerParliamentSessionWaiting() {
+        if (!this.isMultiplayerActive()) return false;
+        const mp = this.state.multiplayer || {};
+        return String(mp.roomState || '').toLowerCase() === 'parliament' && !!mp.parliamentSessionWaitingForOthers;
     },
 
     isMultiplayerParliamentRealtimeVotingEnabled() {
@@ -1192,6 +1229,11 @@ window.Game.App = {
         }
         if (this._isMultiplayerParliamentWaitingBarrier()) {
             return { success: false, msg: 'You already completed this parliament term. Waiting for other players.' };
+        }
+        if (this._isMultiplayerParliamentSessionWaiting()) {
+            const mp = this.state.multiplayer || {};
+            const minSession = Math.max(1, Math.floor(Number(mp.parliamentMinSessionNumber) || 1));
+            return { success: false, msg: `You are ahead of the room. Wait for players to finish session ${minSession}.` };
         }
 
         const mpClient = window.Game.Multiplayer;
@@ -3541,6 +3583,16 @@ window.Game.App = {
         if (!this.state) return true;
         if (this._isMultiplayerParliamentWaitingBarrier()) {
             window.Game.UI.Screens.showNotification('You already completed this parliament term. Waiting for other players.', 'info');
+            return false;
+        }
+        if (this._isMultiplayerParliamentSessionWaiting()) {
+            const mp = this.state.multiplayer || {};
+            const minSession = Math.max(1, Math.floor(Number(mp.parliamentMinSessionNumber) || 1));
+            const mySession = Math.max(1, Math.floor(Number(mp.parliamentMySessionNumber || this.state.sessionNumber) || 1));
+            window.Game.UI.Screens.showNotification(
+                `You already moved to session ${mySession}. Waiting for other players to finish session ${minSession}.`,
+                'info'
+            );
             return false;
         }
         if (this.state.playerRole === 'opposition') {

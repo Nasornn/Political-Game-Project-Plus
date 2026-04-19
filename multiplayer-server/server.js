@@ -139,6 +139,20 @@ function ensureParliamentState(room) {
   }
 }
 
+function getParliamentSessionWindow(room) {
+  ensureParliamentState(room);
+  const sessions = (room.players || []).map((player) =>
+    Math.max(1, Math.floor(Number(player.parliamentSessionNumber) || 1))
+  );
+  if (sessions.length === 0) {
+    return { minSessionNumber: 1, maxSessionNumber: 1 };
+  }
+  return {
+    minSessionNumber: Math.min(...sessions),
+    maxSessionNumber: Math.max(...sessions)
+  };
+}
+
 function resetParliamentRuntimeState(room) {
   ensureParliamentState(room);
   room.parliament.sharedBillUsageBySession = {};
@@ -230,6 +244,7 @@ function sanitizeParliamentPatch(input) {
 function serializeRoom(room) {
   const coalitionState = room.coalition || {};
   ensureParliamentState(room);
+  const sessionWindow = getParliamentSessionWindow(room);
   const pendingOffers = (((room.coalition || {}).offers) || [])
     .filter((offer) => offer.status === 'pending')
     .map((offer) => ({
@@ -292,7 +307,9 @@ function serializeRoom(room) {
         sessionNumber: Number.isFinite(Number(bill.sessionNumber)) ? Number(bill.sessionNumber) : 1,
         proposedAt: Number.isFinite(Number(bill.proposedAt)) ? Number(bill.proposedAt) : null
       })),
-      termCompletionByPlayerId: ((room.parliament || {}).termCompletionByPlayerId) || {}
+      termCompletionByPlayerId: ((room.parliament || {}).termCompletionByPlayerId) || {},
+      minSessionNumber: sessionWindow.minSessionNumber,
+      maxSessionNumber: sessionWindow.maxSessionNumber
     },
     players: room.players.map((p) => ({
       playerId: p.playerId,
@@ -305,7 +322,8 @@ function serializeRoom(room) {
       selectedPartyName: p.selectedPartyName || null,
       turnsCompleted: p.turnsCompleted,
       campaignComplete: p.campaignComplete,
-      parliamentComplete: !!p.parliamentComplete
+      parliamentComplete: !!p.parliamentComplete,
+      parliamentSessionNumber: Math.max(1, Math.floor(Number(p.parliamentSessionNumber) || 1))
     }))
   };
 }
@@ -346,12 +364,15 @@ function publishCampaignProgress(room, reason = 'turn_complete', extra = {}) {
 }
 
 function publishParliamentProgress(room, reason = 'term_progress', extra = {}) {
+  const sessionWindow = getParliamentSessionWindow(room);
   broadcastRoom(room, {
     type: 'parliament_progress',
     roomId: room.id,
     order: room.actionOrder,
     reason,
     progress: buildParliamentProgress(room),
+    minSessionNumber: sessionWindow.minSessionNumber,
+    maxSessionNumber: sessionWindow.maxSessionNumber,
     ...extra,
     at: now()
   });
@@ -1547,6 +1568,7 @@ function respondCoalitionOffer(ws, message) {
 
 function publishSharedGovernmentBillUsage(room, sessionNumber, extra = {}) {
   ensureParliamentState(room);
+  const sessionWindow = getParliamentSessionWindow(room);
   const sessionKey = String(Math.max(1, Math.floor(Number(sessionNumber) || 1)));
   const used = Number((room.parliament.sharedBillUsageBySession || {})[sessionKey] || 0);
   broadcastRoom(room, {
@@ -1554,6 +1576,8 @@ function publishSharedGovernmentBillUsage(room, sessionNumber, extra = {}) {
     roomId: room.id,
     sessionNumber: Number(sessionKey),
     used,
+    minSessionNumber: sessionWindow.minSessionNumber,
+    maxSessionNumber: sessionWindow.maxSessionNumber,
     ...extra,
     at: now()
   });
@@ -1575,7 +1599,9 @@ function syncParliamentRole(ws, message) {
 
   ensureParliamentState(room);
   player.role = (message.role === 'government') ? 'government' : 'opposition';
-  player.parliamentSessionNumber = Math.max(1, Math.floor(Number(message.sessionNumber) || 1));
+  const previousSessionNumber = Math.max(1, Math.floor(Number(player.parliamentSessionNumber) || 1));
+  const requestedSessionNumber = Math.max(1, Math.floor(Number(message.sessionNumber) || previousSessionNumber));
+  player.parliamentSessionNumber = Math.max(previousSessionNumber, Math.min(requestedSessionNumber, previousSessionNumber + 1));
   if (typeof player.parliamentComplete !== 'boolean') {
     player.parliamentComplete = false;
   }
@@ -1665,6 +1691,20 @@ function proposeGovernmentBill(ws, message) {
   }
 
   ensureParliamentState(room);
+  const sessionWindow = getParliamentSessionWindow(room);
+  const playerSessionNumber = Math.max(1, Math.floor(Number(player.parliamentSessionNumber) || 1));
+  if (playerSessionNumber > sessionWindow.minSessionNumber) {
+    safeSend(ws, {
+      type: 'error',
+      code: 'session_sync_wait',
+      message: `Wait for other players to finish session ${sessionWindow.minSessionNumber} before proposing new bills.`
+    });
+    publishParliamentProgress(room, 'session_sync_wait', {
+      byPlayerId: player.playerId
+    });
+    return;
+  }
+
   if (room.parliament.pendingGovernmentBills.length >= GOVERNMENT_BILL_QUEUE_LIMIT) {
     safeSend(ws, { type: 'error', code: 'bill_queue_full', message: 'Pending government bill queue is full.' });
     return;
@@ -1682,9 +1722,8 @@ function proposeGovernmentBill(ws, message) {
     bill.id = `${fallbackId}_dup`;
   }
 
-  const sessionNumber = Math.max(1, Math.floor(Number(message.sessionNumber) || player.parliamentSessionNumber || 1));
+  const sessionNumber = playerSessionNumber;
   const sessionKey = String(sessionNumber);
-  player.parliamentSessionNumber = sessionNumber;
 
   const sessionCap = getGovernmentBillSessionCapFromRoom(room);
   const usedThisSession = Math.max(0, Math.floor(Number(room.parliament.sharedBillUsageBySession[sessionKey] || 0)));
@@ -1776,8 +1815,11 @@ function submitGovernmentBillVote(ws, message) {
   const result = sanitizeGovernmentBillResolutionResult(message.result || {});
   result.billName = result.billName || bill.name;
   result.stance = stance;
-  const sessionNumber = Math.max(1, Math.floor(Number(message.sessionNumber) || Number(bill.sessionNumber) || player.parliamentSessionNumber || 1));
-  player.parliamentSessionNumber = sessionNumber;
+  const sessionNumber = Math.max(1, Math.floor(Number(bill.sessionNumber) || Number(player.parliamentSessionNumber) || 1));
+  player.parliamentSessionNumber = Math.max(
+    Math.max(1, Math.floor(Number(player.parliamentSessionNumber) || 1)),
+    sessionNumber
+  );
   const patch = sanitizeParliamentPatch(message.patch);
 
   room.parliament.pendingGovernmentBills.splice(idx, 1);
