@@ -438,7 +438,11 @@ window.Game.App = {
             this.state.multiplayer.barrierComplete = false;
             this.state.multiplayer.parliamentWaitingForOthers = false;
             this.state.multiplayer.parliamentBarrierComplete = false;
+            this.state.multiplayer.parliamentSessionWaitingForOthers = false;
             this.state.multiplayer.parliamentProgressByPlayerId = {};
+            this.state.multiplayer.parliamentMySessionNumber = 1;
+            this.state.multiplayer.parliamentMinSessionNumber = 1;
+            this.state.multiplayer.parliamentMaxSessionNumber = 1;
             this.state.multiplayer.myTurnsCompleted = 0;
             this.state.multiplayer.electionResultsLocked = false;
             this.state.multiplayer.electionResultsSubmitted = false;
@@ -449,7 +453,14 @@ window.Game.App = {
             } else {
                 refreshUi();
             }
-            window.Game.UI.Screens.showNotification('Multiplayer campaign started: finish 8 turns.', 'info');
+            const reason = String(payload.reason || '').toLowerCase();
+            let startMsg = 'Multiplayer campaign started: finish 8 turns.';
+            if (reason === 'no_confidence_passed') {
+                startMsg = 'No-confidence passed. Parliament reset and a new campaign started.';
+            } else if (reason === 'parliament_dissolved') {
+                startMsg = 'Government dissolved parliament. A new campaign started for all players.';
+            }
+            window.Game.UI.Screens.showNotification(startMsg, 'info');
         });
 
         mpClient.on('campaign_progress', (payload = {}) => {
@@ -674,6 +685,53 @@ window.Game.App = {
 
             this.state.multiplayer.lastUpdatedAt = Date.now();
 
+            refreshUi();
+        });
+
+        mpClient.on('no_confidence_resolved', (payload = {}) => {
+            ensureState();
+            const order = Number(payload.order || 0);
+            const previousOrder = Number(this.state.multiplayer.lastOrder || 0);
+            if (order > 0 && previousOrder > 0 && order <= previousOrder) {
+                return;
+            }
+
+            this.state.multiplayer.lastOrder = Math.max(previousOrder, order);
+            if (payload.patch && typeof payload.patch === 'object') {
+                this._applyMultiplayerParliamentPatch(payload.patch);
+            }
+
+            const result = (payload.result && typeof payload.result === 'object') ? payload.result : null;
+            if (result && window.Game.UI && window.Game.UI.Screens) {
+                const verdict = result.motionPassed ? 'PASSED' : 'FAILED';
+                window.Game.UI.Screens.showNotification(
+                    `No-confidence motion ${verdict} (${result.aye || 0}-${result.nay || 0}-${result.abstain || 0}).`,
+                    result.motionPassed ? 'success' : 'info'
+                );
+            }
+
+            this.state.multiplayer.lastUpdatedAt = Date.now();
+            refreshUi();
+        });
+
+        mpClient.on('parliament_dissolved', (payload = {}) => {
+            ensureState();
+            const order = Number(payload.order || 0);
+            const previousOrder = Number(this.state.multiplayer.lastOrder || 0);
+            if (order > 0 && previousOrder > 0 && order <= previousOrder) {
+                return;
+            }
+
+            this.state.multiplayer.lastOrder = Math.max(previousOrder, order);
+            const reason = String(payload.reason || '').toLowerCase();
+            if (window.Game.UI && window.Game.UI.Screens) {
+                if (reason === 'no_confidence_passed') {
+                    window.Game.UI.Screens.showNotification('Government removed by no-confidence motion. Starting new campaign...', 'success');
+                } else {
+                    window.Game.UI.Screens.showNotification('Parliament dissolved. Starting new campaign...', 'info');
+                }
+            }
+            this.state.multiplayer.lastUpdatedAt = Date.now();
             refreshUi();
         });
 
@@ -1319,6 +1377,91 @@ window.Game.App = {
         return { success: true, result };
     },
 
+    submitMultiplayerNoConfidenceMotion({ capitalCost = 40 } = {}) {
+        if (!this.isMultiplayerParliamentRealtimeVotingEnabled()) {
+            return { success: false, msg: 'Realtime parliament sync is not active for this room.' };
+        }
+        if (this.currentState !== this.STATES.STATE_PARLIAMENT_TERM) {
+            return { success: false, msg: 'Parliament phase is not active.' };
+        }
+        if (this.state.playerRole !== 'opposition') {
+            return { success: false, msg: 'Only opposition players can launch no-confidence motions.' };
+        }
+        if (this._isMultiplayerParliamentWaitingBarrier()) {
+            return { success: false, msg: 'You already completed this parliament term. Waiting for other players.' };
+        }
+
+        const mpClient = window.Game.Multiplayer;
+        if (!mpClient || typeof mpClient.submitNoConfidenceMotion !== 'function') {
+            return { success: false, msg: 'Multiplayer client unavailable.' };
+        }
+
+        const playerParty = (this.state.parties || []).find(p => p.id === this.state.playerPartyId);
+        if (!playerParty) return { success: false, msg: 'Player party not found.' };
+
+        const sessionNumber = Math.max(1, Math.floor(Number(this.state.sessionNumber) || 1));
+        if (!Number.isFinite(this.state.oppositionActionSession) || this.state.oppositionActionSession !== sessionNumber) {
+            this.state.oppositionActionSession = sessionNumber;
+            this.state.oppositionActionsRemaining = 2;
+        }
+
+        const cost = Math.max(0, Math.floor(Number(capitalCost) || 0));
+        if (playerParty.politicalCapital < cost) {
+            return { success: false, msg: `Not enough political capital. Need ${cost}.` };
+        }
+        if (!Number.isFinite(this.state.oppositionActionsRemaining) || this.state.oppositionActionsRemaining <= 0) {
+            return { success: false, msg: 'No opposition actions remaining this session.' };
+        }
+
+        playerParty.politicalCapital -= cost;
+        this.state.oppositionActionsRemaining = Math.max(0, this.state.oppositionActionsRemaining - 1);
+
+        const result = window.Game.Engine.Parliament.runNoConfidence(this.state);
+        const patch = this._captureMultiplayerParliamentPatch();
+        if (!patch) {
+            playerParty.politicalCapital += cost;
+            this.state.oppositionActionsRemaining += 1;
+            return { success: false, msg: 'Failed to build synchronized no-confidence update patch.' };
+        }
+
+        mpClient.submitNoConfidenceMotion({
+            sessionNumber,
+            result,
+            patch
+        });
+
+        this.logRunEvent(
+            'parliament',
+            `No-confidence motion submitted: ${result.motionPassed ? 'PASSED' : 'FAILED'} (${result.aye}-${result.nay}-${result.abstain}).`
+        );
+        return { success: true, result, msg: 'No-confidence motion submitted to room sync.' };
+    },
+
+    requestMultiplayerParliamentDissolve() {
+        if (!this.isMultiplayerParliamentRealtimeVotingEnabled()) {
+            return { success: false, msg: 'Realtime parliament sync is not active for this room.' };
+        }
+        if (this.currentState !== this.STATES.STATE_PARLIAMENT_TERM) {
+            return { success: false, msg: 'Parliament phase is not active.' };
+        }
+        if (this.state.playerRole !== 'government') {
+            return { success: false, msg: 'Only government players can dissolve parliament.' };
+        }
+        if (this._isMultiplayerParliamentWaitingBarrier()) {
+            return { success: false, msg: 'You already completed this parliament term. Waiting for other players.' };
+        }
+
+        const mpClient = window.Game.Multiplayer;
+        if (!mpClient || typeof mpClient.requestParliamentDissolve !== 'function') {
+            return { success: false, msg: 'Multiplayer client unavailable.' };
+        }
+
+        const sessionNumber = Math.max(1, Math.floor(Number(this.state.sessionNumber) || 1));
+        mpClient.requestParliamentDissolve({ sessionNumber });
+        this.logRunEvent('parliament', `Parliament dissolution requested by government at session ${sessionNumber}.`);
+        return { success: true, msg: 'Dissolution request sent. Waiting for room sync.' };
+    },
+
     _captureMultiplayerParliamentPatch() {
         const snapshot = {
             parties: (this.state.parties || []).map((party) => ({
@@ -1333,8 +1476,11 @@ window.Game.App = {
             governmentBillQueue: Array.isArray(this.state.governmentBillQueue) ? this.state.governmentBillQueue.slice() : [],
             governmentBillLog: Array.isArray(this.state.governmentBillLog) ? this.state.governmentBillLog.slice() : [],
             governmentBillFailedCooldown: { ...(this.state.governmentBillFailedCooldown || {}) },
+            oppositionActionSession: Math.max(1, Math.floor(Number(this.state.oppositionActionSession) || 1)),
+            oppositionActionsRemaining: Math.max(0, Math.floor(Number(this.state.oppositionActionsRemaining) || 0)),
             oppositionWalkoutPlan: this.state.oppositionWalkoutPlan || null,
             oppositionSplitPlan: this.state.oppositionSplitPlan || null,
+            oppositionTacticsPlan: this.state.oppositionTacticsPlan || null,
             oppositionPopularityYearTracker: this.state.oppositionPopularityYearTracker || null
         };
 
@@ -1373,8 +1519,15 @@ window.Game.App = {
         if (patch.governmentBillFailedCooldown && typeof patch.governmentBillFailedCooldown === 'object') {
             this.state.governmentBillFailedCooldown = { ...patch.governmentBillFailedCooldown };
         }
+        if (Number.isFinite(Number(patch.oppositionActionSession))) {
+            this.state.oppositionActionSession = Math.max(1, Math.floor(Number(patch.oppositionActionSession)));
+        }
+        if (Number.isFinite(Number(patch.oppositionActionsRemaining))) {
+            this.state.oppositionActionsRemaining = Math.max(0, Math.floor(Number(patch.oppositionActionsRemaining)));
+        }
         this.state.oppositionWalkoutPlan = patch.oppositionWalkoutPlan || null;
         this.state.oppositionSplitPlan = patch.oppositionSplitPlan || null;
+        this.state.oppositionTacticsPlan = patch.oppositionTacticsPlan || null;
         if (patch.oppositionPopularityYearTracker && typeof patch.oppositionPopularityYearTracker === 'object') {
             this.state.oppositionPopularityYearTracker = { ...patch.oppositionPopularityYearTracker };
         }

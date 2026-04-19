@@ -221,6 +221,31 @@ function sanitizeGovernmentBillResolutionResult(input) {
   };
 }
 
+function sanitizeNoConfidenceResult(input) {
+  const result = (input && typeof input === 'object') ? input : {};
+  const aye = Math.max(0, Math.floor(Number(result.aye) || 0));
+  const nay = Math.max(0, Math.floor(Number(result.nay) || 0));
+  const abstain = Math.max(0, Math.floor(Number(result.abstain) || 0));
+  const summary = Array.isArray((((result.oppositionPressureApplied || {}).summary) || null))
+    ? result.oppositionPressureApplied.summary
+      .map((x) => String(x || '').trim().slice(0, 80))
+      .filter(Boolean)
+      .slice(0, 6)
+    : [];
+  const motionPassed = aye > nay;
+
+  return {
+    aye,
+    nay,
+    abstain,
+    motionPassed,
+    survived: !motionPassed,
+    oppositionPressureApplied: {
+      summary
+    }
+  };
+}
+
 function sanitizeParliamentPatch(input) {
   if (!input || typeof input !== 'object') return null;
   let raw;
@@ -1844,6 +1869,121 @@ function submitGovernmentBillVote(ws, message) {
   sendRoomUpdate(room);
 }
 
+function submitNoConfidenceMotion(ws, message) {
+  const room = getRoomBySocket(ws);
+  const ctx = getSocketContext(ws);
+  if (!room || room.state !== 'parliament') {
+    safeSend(ws, { type: 'error', code: 'parliament_not_active', message: 'Parliament phase is not active.' });
+    return;
+  }
+
+  const player = findPlayer(room, ctx.playerId);
+  if (!player) {
+    safeSend(ws, { type: 'error', code: 'player_not_in_room', message: 'Player not in room.' });
+    return;
+  }
+
+  if (player.role !== 'opposition') {
+    safeSend(ws, { type: 'error', code: 'role_not_allowed', message: 'Only opposition players can launch no-confidence motions.' });
+    return;
+  }
+
+  if (player.parliamentComplete) {
+    safeSend(ws, { type: 'error', code: 'parliament_already_completed', message: 'You already completed this parliament term.' });
+    return;
+  }
+
+  const patch = sanitizeParliamentPatch(message.patch);
+  if (!patch) {
+    safeSend(ws, { type: 'error', code: 'invalid_parliament_patch', message: 'Parliament sync patch is invalid.' });
+    return;
+  }
+
+  const result = sanitizeNoConfidenceResult(message.result || {});
+  const sessionNumber = Math.max(1, Math.floor(Number(message.sessionNumber) || Number(player.parliamentSessionNumber) || 1));
+  player.parliamentSessionNumber = Math.max(
+    Math.max(1, Math.floor(Number(player.parliamentSessionNumber) || 1)),
+    sessionNumber
+  );
+  room.actionOrder += 1;
+  room.lastActivityAt = now();
+  player.lastSeenAt = now();
+
+  broadcastRoom(room, {
+    type: 'no_confidence_resolved',
+    roomId: room.id,
+    order: room.actionOrder,
+    byPlayerId: player.playerId,
+    sessionNumber,
+    result,
+    patch,
+    at: now()
+  });
+
+  if (!result.motionPassed) {
+    sendRoomUpdate(room);
+    return;
+  }
+
+  broadcastRoom(room, {
+    type: 'parliament_dissolved',
+    roomId: room.id,
+    order: room.actionOrder,
+    byPlayerId: player.playerId,
+    sessionNumber,
+    reason: 'no_confidence_passed',
+    at: now()
+  });
+
+  startCampaign(room, { reason: 'no_confidence_passed' });
+}
+
+function dissolveParliament(ws, message) {
+  const room = getRoomBySocket(ws);
+  const ctx = getSocketContext(ws);
+  if (!room || room.state !== 'parliament') {
+    safeSend(ws, { type: 'error', code: 'parliament_not_active', message: 'Parliament phase is not active.' });
+    return;
+  }
+
+  const player = findPlayer(room, ctx.playerId);
+  if (!player) {
+    safeSend(ws, { type: 'error', code: 'player_not_in_room', message: 'Player not in room.' });
+    return;
+  }
+
+  if (player.role !== 'government') {
+    safeSend(ws, { type: 'error', code: 'role_not_allowed', message: 'Only government players can dissolve parliament.' });
+    return;
+  }
+
+  if (player.parliamentComplete) {
+    safeSend(ws, { type: 'error', code: 'parliament_already_completed', message: 'You already completed this parliament term.' });
+    return;
+  }
+
+  const sessionNumber = Math.max(1, Math.floor(Number(message.sessionNumber) || Number(player.parliamentSessionNumber) || 1));
+  player.parliamentSessionNumber = Math.max(
+    Math.max(1, Math.floor(Number(player.parliamentSessionNumber) || 1)),
+    sessionNumber
+  );
+  room.actionOrder += 1;
+  room.lastActivityAt = now();
+  player.lastSeenAt = now();
+
+  broadcastRoom(room, {
+    type: 'parliament_dissolved',
+    roomId: room.id,
+    order: room.actionOrder,
+    byPlayerId: player.playerId,
+    sessionNumber,
+    reason: 'parliament_dissolved',
+    at: now()
+  });
+
+  startCampaign(room, { reason: 'parliament_dissolved' });
+}
+
 function reportSharedGovernmentBillPassed(ws, message) {
   const room = getRoomBySocket(ws);
   const ctx = getSocketContext(ws);
@@ -2216,6 +2356,14 @@ wss.on('connection', (ws) => {
       }
       case 'government_bill_vote': {
         submitGovernmentBillVote(ws, msg);
+        break;
+      }
+      case 'no_confidence_motion': {
+        submitNoConfidenceMotion(ws, msg);
+        break;
+      }
+      case 'dissolve_parliament': {
+        dissolveParliament(ws, msg);
         break;
       }
       case 'government_bill_passed': {

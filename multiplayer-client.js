@@ -447,6 +447,14 @@ window.Game.Multiplayer = {
         this._send({ type: 'government_bill_vote', billId, stance, sessionNumber, result, patch });
     },
 
+    submitNoConfidenceMotion({ sessionNumber, result, patch } = {}) {
+        this._send({ type: 'no_confidence_motion', sessionNumber, result, patch });
+    },
+
+    requestParliamentDissolve({ sessionNumber } = {}) {
+        this._send({ type: 'dissolve_parliament', sessionNumber });
+    },
+
     reportGovernmentBillPassed({ billName, sessionNumber } = {}) {
         this._send({ type: 'government_bill_passed', billName, sessionNumber });
     },
@@ -566,6 +574,12 @@ window.Game.Multiplayer = {
                 break;
             case 'government_bill_vote_resolved':
                 this._emit('government_bill_vote_resolved', msg);
+                break;
+            case 'no_confidence_resolved':
+                this._emit('no_confidence_resolved', msg);
+                break;
+            case 'parliament_dissolved':
+                this._emit('parliament_dissolved', msg);
                 break;
             case 'action_applied':
                 this._emit('action_applied', msg);

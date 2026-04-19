@@ -4512,6 +4512,29 @@ window.Game.UI.Screens = {
 
         const btnNC = document.getElementById('btn-no-confidence');
         if (btnNC) btnNC.addEventListener('click', () => {
+            const app = window.Game.App;
+            const realtimeMultiplayerVote = !!(
+                app
+                && app.isMultiplayerParliamentRealtimeVotingEnabled
+                && app.isMultiplayerParliamentRealtimeVotingEnabled()
+            );
+
+            if (realtimeMultiplayerVote) {
+                const sync = app.submitMultiplayerNoConfidenceMotion({ capitalCost: 40 });
+                if (!sync.success) {
+                    this.showNotification(sync.msg || 'Unable to submit no-confidence motion.', 'error');
+                    return;
+                }
+                const result = sync.result;
+                this._updateParliamentStats(gameState);
+                window.Game.App.logRunEvent(
+                    'parliament',
+                    `No-confidence motion: ${result.motionPassed ? 'PASSED' : 'FAILED'} (${result.aye}-${result.nay}-${result.abstain}).`
+                );
+                this._showNoConfidenceResult(result, gameState, { suppressLocalTransition: true });
+                return;
+            }
+
             if (!consumeOppositionAction(40)) return;
             const result = window.Game.Engine.Parliament.runNoConfidence(gameState);
             this._updateParliamentStats(gameState);
@@ -4685,6 +4708,18 @@ window.Game.UI.Screens = {
         if (dissolveBtn) {
             dissolveBtn.addEventListener('click', () => {
                 if (confirm('Dissolve Parliament and trigger a new election?')) {
+                    const app = window.Game.App;
+                    const realtimeMultiplayerVote = !!(
+                        app
+                        && app.isMultiplayerParliamentRealtimeVotingEnabled
+                        && app.isMultiplayerParliamentRealtimeVotingEnabled()
+                    );
+
+                    if (realtimeMultiplayerVote) {
+                        const sync = app.requestMultiplayerParliamentDissolve();
+                        this.showNotification(sync.msg, sync.success ? 'info' : 'error');
+                        return;
+                    }
                     window.Game.App.transition('STATE_CAMPAIGN');
                 }
             });
@@ -5038,14 +5073,21 @@ window.Game.UI.Screens = {
         });
     },
 
-    _showNoConfidenceResult(result, gameState) {
+    _showNoConfidenceResult(result, gameState, { suppressLocalTransition = false } = {}) {
         const modal = document.getElementById('modal');
         const isOpposition = gameState.playerRole === 'opposition';
         const playerWon = isOpposition ? !!result.motionPassed : !!result.survived;
-        const triggerNewElection = isOpposition ? !!result.motionPassed : !result.survived;
+        const triggerNewElectionRaw = isOpposition ? !!result.motionPassed : !result.survived;
+        const triggerNewElection = !suppressLocalTransition && triggerNewElectionRaw;
         const pressureApplied = (result.oppositionPressureApplied && Array.isArray(result.oppositionPressureApplied.summary))
             ? result.oppositionPressureApplied.summary
             : [];
+        const buttonLabel = triggerNewElection
+            ? 'New Election ->'
+            : (suppressLocalTransition ? 'Continue (Room Sync)' : 'Continue');
+        const syncHint = (suppressLocalTransition && triggerNewElectionRaw)
+            ? '<p class="placeholder-text" style="margin-top:8px;">Waiting for multiplayer room synchronization...</p>'
+            : '';
 
         modal.innerHTML = `
             <div class="modal-content nc-result ${playerWon ? 'nc-survived' : 'nc-failed'}">
@@ -5060,8 +5102,9 @@ window.Game.UI.Screens = {
                     ? (playerWon ? 'You successfully toppled the government!' : 'The government survives this round.')
                     : (result.survived ? 'Your government survives! The coalition holds.' : 'The opposition has toppled your government!')}</p>
                 ${pressureApplied.length > 0 ? `<p class="vote-pressure-warning" style="margin-top:8px;">Opposition pressure used: ${pressureApplied.join(' | ')}</p>` : ''}
+                ${syncHint}
                 <button class="btn-primary" id="btn-nc-close">
-                    ${triggerNewElection ? 'New Election ->' : 'Continue'}
+                    ${buttonLabel}
                 </button>
             </div>
         `;
