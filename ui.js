@@ -333,6 +333,9 @@ window.Game.UI.Screens = {
     _campaignMobileView: 'map',
     _campaignSwipeBound: false,
     _campaignSwipeHandlers: null,
+    _parliamentMobileView: 'main',
+    _parliamentSwipeBound: false,
+    _parliamentSwipeHandlers: null,
     _responsiveWatcherBound: false,
     _responsiveWatcher: null,
 
@@ -523,6 +526,8 @@ window.Game.UI.Screens = {
             this._syncResponsiveMode();
             if (this.currentScreen === 'screen-campaign') {
                 this._setupCampaignMobileNavigation();
+            } else if (this.currentScreen === 'screen-parliament') {
+                this._setupParliamentMobileNavigation();
             }
         };
         window.addEventListener('resize', this._responsiveWatcher, { passive: true });
@@ -539,6 +544,12 @@ window.Game.UI.Screens = {
             const campaignScreen = document.getElementById('screen-campaign');
             if (campaignScreen) {
                 campaignScreen.classList.remove('mobile-view-map', 'mobile-view-sidebar');
+            }
+
+            this._parliamentMobileView = 'main';
+            const parliamentScreen = document.getElementById('screen-parliament');
+            if (parliamentScreen) {
+                parliamentScreen.classList.remove('mobile-parliament-main', 'mobile-parliament-map');
             }
         }
     },
@@ -648,6 +659,114 @@ window.Game.UI.Screens = {
         controls.setAttribute('aria-hidden', 'false');
         this._setCampaignMobileView(this._campaignMobileView || 'map');
         this._bindCampaignSwipeNavigation();
+    },
+
+    _setParliamentMobileView(view = 'main') {
+        const parliamentScreen = document.getElementById('screen-parliament');
+        if (!parliamentScreen) return;
+
+        const safeView = view === 'map' ? 'map' : 'main';
+        this._parliamentMobileView = safeView;
+
+        parliamentScreen.classList.toggle('mobile-parliament-main', safeView === 'main');
+        parliamentScreen.classList.toggle('mobile-parliament-map', safeView === 'map');
+
+        const controls = document.getElementById('parliament-mobile-controls');
+        if (!controls) return;
+        controls.querySelectorAll('.parliament-mobile-toggle').forEach(btn => {
+            const active = btn.dataset.view === safeView;
+            btn.classList.toggle('active', active);
+            btn.setAttribute('aria-selected', active ? 'true' : 'false');
+        });
+    },
+
+    _bindParliamentSwipeNavigation() {
+        if (this._parliamentSwipeBound) return;
+        const parliamentScreen = document.getElementById('screen-parliament');
+        if (!parliamentScreen) return;
+
+        let startX = 0;
+        let startY = 0;
+        let startTs = 0;
+
+        const onStart = (event) => {
+            if (this.currentScreen !== 'screen-parliament' || !this._isMobileLayout()) return;
+            if (!event.touches || event.touches.length !== 1) return;
+            const t = event.touches[0];
+            startX = t.clientX;
+            startY = t.clientY;
+            startTs = Date.now();
+        };
+
+        const onEnd = (event) => {
+            if (this.currentScreen !== 'screen-parliament' || !this._isMobileLayout()) return;
+            if (!event.changedTouches || event.changedTouches.length === 0) return;
+
+            const t = event.changedTouches[0];
+            const dx = t.clientX - startX;
+            const dy = t.clientY - startY;
+            const dt = Date.now() - startTs;
+
+            if (dt > 520) return;
+            if (Math.abs(dx) < 56) return;
+            if (Math.abs(dx) < (Math.abs(dy) * 1.25)) return;
+
+            if (dx < 0) {
+                this._setParliamentMobileView('map');
+            } else {
+                this._setParliamentMobileView('main');
+            }
+        };
+
+        parliamentScreen.addEventListener('touchstart', onStart, { passive: true });
+        parliamentScreen.addEventListener('touchend', onEnd, { passive: true });
+
+        this._parliamentSwipeHandlers = { onStart, onEnd };
+        this._parliamentSwipeBound = true;
+    },
+
+    _setupParliamentMobileNavigation() {
+        const parliamentScreen = document.getElementById('screen-parliament');
+        if (!parliamentScreen) return;
+
+        const isMobile = this._isMobileLayout();
+        let controls = document.getElementById('parliament-mobile-controls');
+
+        if (!controls) {
+            controls = document.createElement('div');
+            controls.id = 'parliament-mobile-controls';
+            controls.className = 'parliament-mobile-controls';
+            controls.innerHTML = `
+                <div class="parliament-mobile-switch" role="tablist" aria-label="Parliament mobile view switch">
+                    <button class="parliament-mobile-toggle active" data-view="main" role="tab" aria-selected="true">🏛️ Chamber</button>
+                    <button class="parliament-mobile-toggle" data-view="map" role="tab" aria-selected="false">🗺️ Map</button>
+                </div>
+                <div class="parliament-mobile-hint">Swipe left/right to switch views</div>
+            `;
+            parliamentScreen.appendChild(controls);
+        }
+
+        if (!controls.dataset.bound) {
+            controls.addEventListener('click', (event) => {
+                const btn = event.target.closest('.parliament-mobile-toggle');
+                if (!btn) return;
+                this._setParliamentMobileView(btn.dataset.view || 'main');
+            });
+            controls.dataset.bound = '1';
+        }
+
+        if (!isMobile) {
+            controls.classList.remove('active');
+            controls.setAttribute('aria-hidden', 'true');
+            parliamentScreen.classList.remove('mobile-parliament-main', 'mobile-parliament-map');
+            this._parliamentMobileView = 'main';
+            return;
+        }
+
+        controls.classList.add('active');
+        controls.setAttribute('aria-hidden', 'false');
+        this._setParliamentMobileView(this._parliamentMobileView || 'main');
+        this._bindParliamentSwipeNavigation();
     },
 
     show(screenId) {
@@ -2899,6 +3018,7 @@ window.Game.UI.Screens = {
 
         const main = document.getElementById('parliament-main');
         if (!main) return;
+        this._setupParliamentMobileNavigation();
 
         const playerParty = gameState.parties.find(p => p.id === gameState.playerPartyId);
         const hasElection = !!(gameState.electionResults && gameState.electionResults.totalSeats);
@@ -3618,7 +3738,7 @@ window.Game.UI.Screens = {
             if (splitBtn) splitBtn.addEventListener('click', () => {
                 if (!consumeOppositionAction(25, true)) return;
                 const splitGreyCost = 40;
-                if (player.greyMoney < splitGreyCost) {
+                if (playerParty.greyMoney < splitGreyCost) {
                     this.showNotification(`Not enough grey money. Need ${splitGreyCost}.`, 'error');
                     return;
                 }
@@ -3631,7 +3751,7 @@ window.Game.UI.Screens = {
                 }
 
                 this._showTargetPartyPicker(gameState, (targetPartyId) => {
-                    player.greyMoney -= splitGreyCost;
+                    playerParty.greyMoney -= splitGreyCost;
                     consumeOppositionAction(25);
                     const result = window.Game.Engine.Parliament.attemptCoalitionSplit(gameState, targetPartyId);
                     this.showNotification(result.msg, result.success ? 'success' : 'error');
