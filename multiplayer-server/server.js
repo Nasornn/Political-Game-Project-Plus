@@ -9,6 +9,11 @@ const ROOM_CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 const ROOM_CLEANUP_GRACE_MS = 60000;
 const AUTO_COMPLETE_DISCONNECTED_MS = 180000;
 const CHAT_HISTORY_LIMIT = 120;
+const CAMPAIGN_EMERGENT_PARTY_CHANCE = 0.14;
+const CAMPAIGN_EMERGENT_PARTY_MAX = 4;
+const CAMPAIGN_EMERGENT_PARTY_MIN_TURN = 3;
+const CAMPAIGN_ACTION_EMERGENT_PARTY_TYPE = 'campaign_emergent_party_spawned';
+const CAMPAIGN_ACTION_PAYLOAD_MAX_BYTES = 4096;
 
 const rooms = new Map();
 const queue = [];
@@ -142,6 +147,87 @@ function publishCampaignProgress(room, reason = 'turn_complete', extra = {}) {
   });
 }
 
+function ensureCampaignEmergentState(room) {
+  if (!room || !room.campaign || typeof room.campaign !== 'object') return;
+  if (!room.campaign.emergentParty || typeof room.campaign.emergentParty !== 'object') {
+    room.campaign.emergentParty = {};
+  }
+  if (!Number.isFinite(room.campaign.emergentParty.count) || room.campaign.emergentParty.count < 0) {
+    room.campaign.emergentParty.count = 0;
+  }
+  if (!room.campaign.emergentParty.triggeredTurns || typeof room.campaign.emergentParty.triggeredTurns !== 'object') {
+    room.campaign.emergentParty.triggeredTurns = {};
+  }
+}
+
+function createCampaignEmergentPartyPayload(room, turnNumber) {
+  ensureCampaignEmergentState(room);
+  const emergent = room.campaign.emergentParty;
+  const sequence = Math.max(1, Math.floor(Number(emergent.count) || 0) + 1);
+  const safeTurn = Math.max(1, Math.floor(Number(turnNumber) || 1));
+  const seed = Math.floor(Math.random() * 2147483647);
+  const roomToken = String(room.id || 'room').toLowerCase();
+  const partyId = `emergent_${roomToken}_${String(safeTurn).padStart(2, '0')}_${String(sequence).padStart(2, '0')}`;
+  return {
+    eventId: `${partyId}_${seed}`,
+    partyId,
+    seed,
+    turnNumber: safeTurn,
+    sequence
+  };
+}
+
+function maybeTriggerCampaignEmergentParty(room, turnNumber, byPlayerId = null) {
+  if (!room || room.state !== 'campaign') return false;
+  ensureCampaignEmergentState(room);
+
+  const emergent = room.campaign.emergentParty;
+  const safeTurn = Math.max(1, Math.floor(Number(turnNumber) || 0));
+  if (!safeTurn || safeTurn < CAMPAIGN_EMERGENT_PARTY_MIN_TURN) return false;
+  if ((Number(emergent.count) || 0) >= CAMPAIGN_EMERGENT_PARTY_MAX) return false;
+
+  const turnKey = String(safeTurn);
+  if (emergent.triggeredTurns[turnKey]) return false;
+  emergent.triggeredTurns[turnKey] = true;
+
+  if (Math.random() > CAMPAIGN_EMERGENT_PARTY_CHANCE) {
+    return false;
+  }
+
+  const payload = createCampaignEmergentPartyPayload(room, safeTurn);
+  emergent.count = Math.max(0, Math.floor(Number(emergent.count) || 0)) + 1;
+  room.actionOrder += 1;
+  room.lastActivityAt = now();
+
+  broadcastRoom(room, {
+    type: 'action_applied',
+    roomId: room.id,
+    order: room.actionOrder,
+    playerId: byPlayerId || null,
+    actionType: CAMPAIGN_ACTION_EMERGENT_PARTY_TYPE,
+    payload,
+    at: now()
+  });
+
+  return true;
+}
+
+function sanitizeCampaignActionPayload(input) {
+  if (!input || typeof input !== 'object') return {};
+  let raw;
+  try {
+    raw = JSON.stringify(input);
+  } catch (err) {
+    return {};
+  }
+  if (!raw || raw.length > CAMPAIGN_ACTION_PAYLOAD_MAX_BYTES) return {};
+  try {
+    return JSON.parse(raw);
+  } catch (err) {
+    return {};
+  }
+}
+
 function safeSend(ws, payload) {
   if (!ws || ws.readyState !== ws.OPEN) return;
   ws.send(JSON.stringify(payload));
@@ -247,7 +333,11 @@ function createRoom(ownerWs, name, maxPlayers = MAX_PLAYERS) {
       requiredTurns: TURN_TARGET,
       startedAt: null,
       barrierCompletedAt: null,
-      electionSeed: null
+      electionSeed: null,
+      emergentParty: {
+        count: 0,
+        triggeredTurns: {}
+      }
     },
     election: {
       seed: null,
@@ -762,6 +852,10 @@ function startCampaign(room) {
   room.campaign.startedAt = now();
   room.campaign.barrierCompletedAt = null;
   room.campaign.electionSeed = null;
+  room.campaign.emergentParty = {
+    count: 0,
+    triggeredTurns: {}
+  };
   room.election.seed = null;
   room.election.results = null;
   room.election.resultsByPlayerId = null;
@@ -1326,6 +1420,7 @@ function applyCampaignTurnComplete(ws, message) {
   room.lastActivityAt = now();
 
   publishCampaignProgress(room, 'turn_complete');
+  maybeTriggerCampaignEmergentParty(room, player.turnsCompleted, player.playerId);
 
   sendRoomUpdate(room);
   maybeCompleteBarrier(room);
@@ -1349,6 +1444,18 @@ function applyCampaignAction(ws, message) {
     return;
   }
 
+  const actionType = String(message.actionType || 'unknown').trim().slice(0, 64) || 'unknown';
+  if (actionType === CAMPAIGN_ACTION_EMERGENT_PARTY_TYPE) {
+    safeSend(ws, {
+      type: 'error',
+      code: 'action_not_allowed',
+      message: 'This campaign action is server-managed.'
+    });
+    return;
+  }
+
+  const payload = sanitizeCampaignActionPayload(message.payload || {});
+
   room.actionOrder += 1;
   room.lastActivityAt = now();
   player.lastSeenAt = now();
@@ -1358,8 +1465,8 @@ function applyCampaignAction(ws, message) {
     roomId: room.id,
     order: room.actionOrder,
     playerId: player.playerId,
-    actionType: String(message.actionType || 'unknown'),
-    payload: message.payload || {},
+    actionType,
+    payload,
     at: now()
   });
 }

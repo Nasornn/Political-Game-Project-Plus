@@ -195,7 +195,7 @@ window.Game.App = {
             this._ensureMultiplayerStateShape(this.state);
         };
 
-        const refreshUi = () => {
+        const refreshUiNow = () => {
             if (!window.Game.UI || !window.Game.UI.Screens) return;
             if (this.currentState === this.STATES.STATE_SETUP) {
                 window.Game.UI.Screens.renderSetup(this.state);
@@ -222,6 +222,22 @@ window.Game.App = {
             const titleText = String((title && title.textContent) || '').toLowerCase();
             if (titleText.includes('multiplayer session')) {
                 window.Game.UI.Screens.renderMultiplayerModal();
+            }
+        };
+
+        const refreshUi = () => {
+            if (this._multiplayerRefreshScheduled) return;
+            this._multiplayerRefreshScheduled = true;
+
+            const flush = () => {
+                this._multiplayerRefreshScheduled = false;
+                refreshUiNow();
+            };
+
+            if (typeof window.requestAnimationFrame === 'function') {
+                window.requestAnimationFrame(flush);
+            } else {
+                window.setTimeout(flush, 16);
             }
         };
 
@@ -572,7 +588,27 @@ window.Game.App = {
             ensureState();
             const actionType = payload.actionType || 'action';
             const order = Number(payload.order || 0);
-            this.state.multiplayer.lastOrder = order;
+            const previousOrder = Number(this.state.multiplayer.lastOrder || 0);
+            if (order > 0 && previousOrder > 0 && order <= previousOrder) {
+                return;
+            }
+            this.state.multiplayer.lastOrder = Math.max(previousOrder, order);
+
+            if (actionType === 'campaign_emergent_party_spawned') {
+                const eventPayload = (payload.payload && typeof payload.payload === 'object')
+                    ? payload.payload
+                    : {};
+                const didSpawn = this._maybeSpawnCampaignPartyEvent({
+                    forceSpawn: true,
+                    source: 'multiplayer_server',
+                    seed: eventPayload.seed,
+                    partyId: eventPayload.partyId
+                });
+                if (didSpawn && this.currentState === this.STATES.STATE_CAMPAIGN) {
+                    refreshUi();
+                }
+            }
+
             this.logRunEvent('multiplayer', `Order #${order}: ${actionType}`, {
                 order,
                 actionType,
@@ -620,6 +656,9 @@ window.Game.App = {
         mp.roomState = room.state || mp.roomState;
         mp.ownerPlayerId = room.ownerPlayerId || mp.ownerPlayerId || null;
         mp.campaignRequiredTurns = Number(room.campaignRequiredTurns || mp.campaignRequiredTurns || 8);
+        if (Number.isFinite(Number(room.actionOrder))) {
+            mp.lastOrder = Math.max(0, Math.floor(Number(room.actionOrder)));
+        }
         mp.players = Array.isArray(room.players) ? room.players.map(p => ({ ...p })) : mp.players;
         mp.pendingCoalitionOffers = (room.coalition && Array.isArray(room.coalition.pendingOffers))
             ? room.coalition.pendingOffers.map(row => ({ ...row }))
@@ -1014,6 +1053,16 @@ window.Game.App = {
         if (!Number.isFinite(n)) return fallback;
         const bounded = Math.max(min, Math.min(max, n));
         return round ? Math.round(bounded) : bounded;
+    },
+
+    _createDeterministicRng(seedValue = 1) {
+        let t = (Math.floor(Number(seedValue) || 1) >>> 0) || 1;
+        return () => {
+            t = (t + 0x6D2B79F5) >>> 0;
+            let r = Math.imul(t ^ (t >>> 15), 1 | t);
+            r ^= r + Math.imul(r ^ (r >>> 7), 61 | r);
+            return (((r ^ (r >>> 14)) >>> 0) / 4294967296);
+        };
     },
 
     _safeHexColor(value, fallback = '#888888') {
@@ -2269,7 +2318,9 @@ window.Game.App = {
 
         // AI campaigns
         window.Game.Engine.Campaign.runAICampaign(this.state, this.state.campaignTurn);
-        this._maybeSpawnCampaignPartyEvent();
+        if (!multiplayerActive) {
+            this._maybeSpawnCampaignPartyEvent();
+        }
 
         this.logRunEvent('campaign', `Week ${this.state.campaignTurn} ended.`);
 
@@ -3494,14 +3545,23 @@ window.Game.App = {
         return result;
     },
 
-    _maybeSpawnCampaignPartyEvent() {
-        if (!this.state || this.state._spawnedPartyThisCampaign) return;
-        if ((this.state._emergentPartyCount || 0) >= 4) return;
-        if (this.state.campaignTurn < 3) return;
-        if (Math.random() > window.Game.Engine.Campaign.getEmergentPartyChance(this.state)) return;
+    _maybeSpawnCampaignPartyEvent(options = {}) {
+        const forceSpawn = !!options.forceSpawn;
+        const source = forceSpawn ? (options.source || 'multiplayer_server') : 'local';
+
+        if (!this.state || this.state._spawnedPartyThisCampaign) return false;
+        if ((this.state._emergentPartyCount || 0) >= 4) return false;
+
+        if (!forceSpawn) {
+            if (this.state.campaignTurn < 3) return false;
+            if (Math.random() > window.Game.Engine.Campaign.getEmergentPartyChance(this.state)) return false;
+        }
+
+        const seed = Math.max(1, Math.floor(Number(options.seed) || Math.floor(Math.random() * 2147483647)));
+        const roll = forceSpawn ? this._createDeterministicRng(seed) : Math.random;
 
         const provinceEntries = Object.entries(window.Game.Data.PROVINCES || {});
-        if (provinceEntries.length === 0) return;
+        if (provinceEntries.length === 0) return false;
         const localStrongholdProvinces = provinceEntries
             .filter(([, seats]) => seats >= 2 && seats <= 4)
             .map(([name]) => name);
@@ -3511,7 +3571,7 @@ window.Game.App = {
         const provincePool = localStrongholdProvinces.length > 0
             ? localStrongholdProvinces
             : (fallbackProvinces.length > 0 ? fallbackProvinces : provinceEntries.map(([name]) => name));
-        const provinceName = provincePool[Math.floor(Math.random() * provincePool.length)];
+        const provinceName = provincePool[Math.floor(roll() * provincePool.length)];
         const provinceSeatCount = window.Game.Data.PROVINCES[provinceName] || 1;
         const targetSeatCount = Math.max(1, Math.min(3, provinceSeatCount));
         const region = window.Game.Data.PROVINCE_REGION[provinceName] || 'Central';
@@ -3538,25 +3598,37 @@ window.Game.App = {
             '#06B6D4', '#0EA5E9', '#3B82F6', '#6366F1', '#8B5CF6', '#A855F7', '#D946EF', '#EC4899',
             '#F43F5E', '#DC2626', '#7C3AED', '#1D4ED8', '#0284C7', '#0F766E', '#16A34A', '#65A30D'
         ];
-        const chosen = namePool[Math.floor(Math.random() * namePool.length)];
-        const uniqueColor = this._pickUniquePartyColor(palette, Date.now());
+        const chosen = namePool[Math.floor(roll() * namePool.length)];
+        const uniqueColor = this._pickUniquePartyColor(palette, forceSpawn ? seed : Date.now());
 
         const usedIds = new Set(this.state.parties.map(p => p.id));
-        let id = `emergent_${Date.now()}`;
-        while (usedIds.has(id)) id = `emergent_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
+        let id = String(options.partyId || '').trim();
+        if (forceSpawn && id && usedIds.has(id)) {
+            return false;
+        }
+        if (!id) {
+            id = forceSpawn
+                ? `emergent_${seed}_${(this.state._emergentPartyCount || 0) + 1}`
+                : `emergent_${Date.now()}`;
+        }
+        while (usedIds.has(id)) {
+            id = forceSpawn
+                ? `${id}_${Math.floor(roll() * 1000)}`
+                : `emergent_${Date.now()}_${Math.floor(roll() * 1000)}`;
+        }
 
         const regionalPopMod = {};
         for (const r of Object.keys(window.Game.Data.REGIONS || {})) regionalPopMod[r] = -6;
         regionalPopMod[region] = -1;
 
-        const provincialBanYaiValue = 65 + Math.floor(Math.random() * 16); // 65-80 local machine
+        const provincialBanYaiValue = 65 + Math.floor(roll() * 16); // 65-80 local machine
         const newParty = {
             id,
             name: chosen.name,
             thaiName: chosen.thaiName,
             shortName: chosen.shortName,
             hexColor: uniqueColor,
-            basePopularity: 3 + Math.floor(Math.random() * 3), // 3-5 national baseline
+            basePopularity: 3 + Math.floor(roll() * 3), // 3-5 national baseline
             banYaiPower: 0, // No broad influence; strength is only in one province
             regionalBanYai: {},
             provincialBanYai: { [provinceName]: provincialBanYaiValue },
@@ -3565,7 +3637,7 @@ window.Game.App = {
             politicalCapital: 80,
             greyMoney: 20,
             scandalMeter: 0,
-            ideology: 35 + Math.floor(Math.random() * 31),
+            ideology: 35 + Math.floor(roll() * 31),
             description: `A newly formed local movement centered in ${provinceName}.`,
             isPlayerSelectable: true,
             isCustom: true,
@@ -3575,23 +3647,25 @@ window.Game.App = {
         this.state.parties.push(newParty);
 
         if (this.state.districts && this.state.districts.length > 0) {
+            const districtById = new Map();
             for (const d of this.state.districts) {
+                districtById.set(d.id, d);
                 if (d.provinceName === provinceName) {
                     // Concentrate strength in only a few seats to mimic a local machine.
                     if (d.seatIndex <= targetSeatCount) {
-                        d.localLeanings[newParty.id] = 13 + Math.floor(Math.random() * 5); // 13-17
+                        d.localLeanings[newParty.id] = 13 + Math.floor(roll() * 5); // 13-17
                     } else {
-                        d.localLeanings[newParty.id] = 3 + Math.floor(Math.random() * 4); // 3-6
+                        d.localLeanings[newParty.id] = 3 + Math.floor(roll() * 4); // 3-6
                     }
                 } else {
-                    d.localLeanings[newParty.id] = -7 + Math.floor(Math.random() * 4); // -7 to -4
+                    d.localLeanings[newParty.id] = -7 + Math.floor(roll() * 4); // -7 to -4
                 }
             }
             this.state.partyMPs[newParty.id] = this._generatePartyMPs(newParty);
             // Boost only target-seat candidates; keep other districts weak.
             for (const mp of this.state.partyMPs[newParty.id]) {
                 if (!mp.isPartyList) {
-                    const d = this.state.districts.find(dd => dd.id === mp.districtId);
+                    const d = districtById.get(mp.districtId);
                     if (d && d.provinceName === provinceName) {
                         if (d.seatIndex <= targetSeatCount) {
                             mp.localPopularity = Math.min(32, mp.localPopularity + 11);
@@ -3612,6 +3686,14 @@ window.Game.App = {
             `🆕 New party emerged: ${newParty.thaiName} established BanYai ${provincialBanYaiValue} in ${provinceName}!`,
             'info'
         );
+
+        this.logRunEvent('campaign-event', `Emergent party synchronized (${source}): ${newParty.thaiName}`, {
+            partyId: newParty.id,
+            source,
+            turningPointScore: 1.4
+        });
+
+        return true;
     },
 
     // ─── INIT HELPERS ────────────────────────────────────────
