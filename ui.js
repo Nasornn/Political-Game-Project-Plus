@@ -1370,6 +1370,77 @@ window.Game.UI.Screens = {
         return 'Offline';
     },
 
+    _shouldRenderMultiplayerChat(gameState) {
+        const app = window.Game.App;
+        return !!(
+            app
+            && app.isMultiplayerActive
+            && app.isMultiplayerActive()
+            && gameState
+            && gameState.multiplayer
+            && gameState.multiplayer.roomId
+        );
+    },
+
+    _renderMultiplayerChatBox(gameState, channel = 'global') {
+        if (!this._shouldRenderMultiplayerChat(gameState)) return '';
+        const mpState = gameState.multiplayer || {};
+        const rows = Array.isArray(mpState.chatMessages) ? mpState.chatMessages.slice(-24) : [];
+        const escapeHtml = (value) => String(value || '')
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+
+        return `
+            <div class="setup-scenario-panel" id="mp-chat-box" style="margin-top:10px;">
+                <div class="setup-scenario-title">Room Chat</div>
+                <div class="mp-list" id="mp-chat-log" style="max-height:150px;margin-bottom:8px;">
+                    ${rows.length === 0
+                        ? '<p class="placeholder-text" style="padding:10px;">No messages yet.</p>'
+                        : rows.map(row => `
+                            <div class="mp-pick-card" style="cursor:default;">
+                                <span class="mp-name">${escapeHtml(row.name || 'Player')}${row.playerId === mpState.playerId ? ' (You)' : ''}</span>
+                                <span class="mp-loyalty">${escapeHtml(row.channel || channel)}</span>
+                                <span class="mp-corruption">${escapeHtml(row.text || '')}</span>
+                            </div>
+                        `).join('')
+                    }
+                </div>
+                <div style="display:grid;grid-template-columns:1fr auto;gap:8px;">
+                    <input class="form-input" id="mp-chat-input" placeholder="Type message..." maxlength="280">
+                    <button class="btn-small" id="mp-chat-send" style="margin:0;text-align:center;">Send</button>
+                </div>
+            </div>
+        `;
+    },
+
+    _bindMultiplayerChatBox(gameState, channel = 'global') {
+        if (!this._shouldRenderMultiplayerChat(gameState)) return;
+        const input = document.getElementById('mp-chat-input');
+        const sendBtn = document.getElementById('mp-chat-send');
+        if (!input || !sendBtn) return;
+
+        const submit = () => {
+            const value = input.value.trim();
+            if (!value) return;
+            const result = window.Game.App.sendMultiplayerChatMessage(value, channel);
+            if (!result.success) {
+                this.showNotification(result.msg, 'error');
+                return;
+            }
+            input.value = '';
+        };
+
+        sendBtn.addEventListener('click', submit);
+        input.addEventListener('keydown', (ev) => {
+            if (ev.key !== 'Enter') return;
+            ev.preventDefault();
+            submit();
+        });
+    },
+
     async renderMultiplayerModal() {
         const modal = document.getElementById('modal');
         if (!modal) return;
@@ -1379,6 +1450,9 @@ window.Game.UI.Screens = {
         const mpState = this._getMultiplayerState() || {};
         const roomPlayers = Array.isArray(mpState.players) ? mpState.players : [];
         const inRoom = !!mpState.roomId;
+        const isHost = !!(inRoom && mpState.playerId && mpState.ownerPlayerId && mpState.playerId === mpState.ownerPlayerId);
+        const configuredEndpoint = String((mpClient && mpClient.configuredEndpoint) || '').trim();
+        const endpointLocked = !!(mpClient && mpClient.endpointLocked && configuredEndpoint);
         const me = roomPlayers.find(p => p.playerId === mpState.playerId);
         const meReady = !!(me && me.ready);
 
@@ -1399,27 +1473,36 @@ window.Game.UI.Screens = {
                 <div class="setup-scenario-panel" style="margin-bottom:10px;">
                     <div class="setup-scenario-title">Quick Steps</div>
                     <p class="setup-scenario-desc" style="margin-bottom:8px;">
-                        1) Connect to server, 2) Host room or Join room code, 3) All players Set Ready, 4) Play 8 turns each, election starts automatically.
+                        1) Host room, 2) Copy Join Key, 3) Friends paste key and tap Join, 4) Ready + start, 5) Party lock and play.
                     </p>
-                    <div style="display:grid;grid-template-columns:1fr auto;gap:8px;align-items:center;">
+                    <div style="display:grid;grid-template-columns:1fr auto auto auto;gap:8px;align-items:center;">
                         <div class="form-input" style="display:flex;align-items:center;">Room Code: <strong style="margin-left:6px;">${mpState.roomId || '—'}</strong></div>
                         <button class="btn-small" id="btn-mp-copy-room" style="margin:0;text-align:center;" ${inRoom ? '' : 'disabled'}>Copy Code</button>
+                        <button class="btn-small" id="btn-mp-copy-key" style="margin:0;text-align:center;" ${inRoom ? '' : 'disabled'}>Copy Join Key</button>
+                        <button class="btn-small" id="btn-mp-copy-invite" style="margin:0;text-align:center;" ${inRoom ? '' : 'disabled'}>Copy Invite Link</button>
                     </div>
                 </div>
 
-                <div class="setup-scenario-panel" style="margin-bottom:10px;">
-                    <div class="setup-scenario-title">Connection</div>
-                    <div style="display:grid;grid-template-columns:1fr auto;gap:8px;">
-                        <input id="mp-endpoint" class="form-input" value="${(mpState.endpoint || (mpClient && mpClient.endpoint) || 'ws://localhost:8787').replace(/"/g, '&quot;')}" placeholder="ws://localhost:8787">
-                        <button class="btn-small" id="btn-mp-connect" style="margin:0;text-align:center;">Connect</button>
+                ${endpointLocked ? `
+                    <div class="setup-scenario-panel" style="margin-bottom:10px;">
+                        <div class="setup-scenario-title">Server</div>
+                        <p class="setup-scenario-desc" style="margin:0;">Configured for auto-connect. Players can host/join directly.</p>
                     </div>
-                </div>
+                ` : `
+                    <div class="setup-scenario-panel" style="margin-bottom:10px;">
+                        <div class="setup-scenario-title">Connection</div>
+                        <div style="display:grid;grid-template-columns:1fr auto;gap:8px;">
+                            <input id="mp-endpoint" class="form-input" value="${(mpState.endpoint || (mpClient && mpClient.endpoint) || 'ws://localhost:8787').replace(/"/g, '&quot;')}" placeholder="ws://localhost:8787">
+                            <button class="btn-small" id="btn-mp-connect" style="margin:0;text-align:center;">Connect</button>
+                        </div>
+                    </div>
+                `}
 
                 <div class="setup-scenario-panel" style="margin-bottom:10px;">
                     <div class="setup-scenario-title">Lobby Actions</div>
                     <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px;">
                         <input id="mp-player-name" class="form-input" value="${(mpState.playerName || this._multiplayerNameSeed || 'Player').replace(/"/g, '&quot;')}" placeholder="Player name">
-                        <input id="mp-room-id" class="form-input" value="" placeholder="Room code (e.g. AB12CD)">
+                        <input id="mp-room-id" class="form-input" value="" placeholder="Room code, Join Key, or invite link">
                     </div>
                     <div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;">
                         <button class="btn-small" id="btn-mp-host" style="margin:0;text-align:center;" ${inRoom ? 'disabled' : ''}>Host Room</button>
@@ -1429,6 +1512,11 @@ window.Game.UI.Screens = {
                     <div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:8px;">
                         <button class="btn-small" id="btn-mp-ready" style="margin:0;text-align:center;" ${inRoom ? '' : 'disabled'}>${meReady ? 'Set Unready' : 'Set Ready'}</button>
                         <button class="btn-small" id="btn-mp-leave" style="margin:0;text-align:center;" ${inRoom ? '' : 'disabled'}>Leave Room</button>
+                    </div>
+                    <div style="display:grid;grid-template-columns:1fr;gap:8px;margin-top:8px;">
+                        <button class="btn-small" id="btn-mp-start" style="margin:0;text-align:center;" ${(inRoom && isHost && (mpState.roomState || 'lobby') === 'lobby') ? '' : 'disabled'}>
+                            Start Match (Host)
+                        </button>
                     </div>
                 </div>
 
@@ -1466,6 +1554,65 @@ window.Game.UI.Screens = {
             });
         }
 
+        const warnIfLocalEndpoint = () => {
+            const endpoint = String((mpState.endpoint || (mpClient && mpClient.endpoint) || '')).toLowerCase();
+            if (endpoint.includes('localhost') || endpoint.includes('127.0.0.1')) {
+                this.showNotification('Endpoint is localhost. Use LAN/public endpoint for other devices.', 'info');
+            }
+        };
+
+        const copyKeyBtn = document.getElementById('btn-mp-copy-key');
+        if (copyKeyBtn) {
+            copyKeyBtn.addEventListener('click', async () => {
+                if (!mpState.roomId) return;
+                const nameInput = document.getElementById('mp-player-name');
+                const seedName = (nameInput && nameInput.value.trim()) || mpState.playerName || 'Player';
+                const joinKey = (mpClient && mpClient.buildJoinKey)
+                    ? mpClient.buildJoinKey(mpState.roomId, { name: seedName })
+                    : '';
+
+                if (!joinKey) {
+                    this.showNotification('Could not build join key.', 'error');
+                    return;
+                }
+
+                try {
+                    await navigator.clipboard.writeText(joinKey);
+                    this.showNotification('Join key copied. Friends can paste it and press Join.', 'success');
+                } catch (_) {
+                    this.showNotification(joinKey, 'info');
+                }
+
+                warnIfLocalEndpoint();
+            });
+        }
+
+        const copyInviteBtn = document.getElementById('btn-mp-copy-invite');
+        if (copyInviteBtn) {
+            copyInviteBtn.addEventListener('click', async () => {
+                if (!mpState.roomId) return;
+                const nameInput = document.getElementById('mp-player-name');
+                const seedName = (nameInput && nameInput.value.trim()) || mpState.playerName || 'Player';
+                const inviteLink = (mpClient && mpClient.buildInviteLink)
+                    ? mpClient.buildInviteLink(mpState.roomId, { name: seedName })
+                    : '';
+
+                if (!inviteLink) {
+                    this.showNotification('Could not build invite link.', 'error');
+                    return;
+                }
+
+                try {
+                    await navigator.clipboard.writeText(inviteLink);
+                    this.showNotification('Invite link copied. Friends can open it to auto-join.', 'success');
+                } catch (_) {
+                    this.showNotification(inviteLink, 'info');
+                }
+
+                warnIfLocalEndpoint();
+            });
+        }
+
         const getName = () => {
             const raw = document.getElementById('mp-player-name').value.trim();
             const name = raw || 'Player';
@@ -1476,16 +1623,20 @@ window.Game.UI.Screens = {
             return name;
         };
 
-        document.getElementById('btn-mp-connect').addEventListener('click', async () => {
-            if (this._multiplayerConnectPending) return;
-            this._multiplayerConnectPending = true;
-            const endpoint = document.getElementById('mp-endpoint').value.trim();
-            if (endpoint) mpClient.setEndpoint(endpoint);
-            const result = await mpClient.connect();
-            this._multiplayerConnectPending = false;
-            this.showNotification(result.msg, result.success ? 'success' : 'error');
-            if (!modal.classList.contains('hidden')) this.renderMultiplayerModal();
-        });
+        const connectBtn = document.getElementById('btn-mp-connect');
+        if (connectBtn) {
+            connectBtn.addEventListener('click', async () => {
+                if (this._multiplayerConnectPending) return;
+                this._multiplayerConnectPending = true;
+                const endpointInput = document.getElementById('mp-endpoint');
+                const endpoint = endpointInput ? endpointInput.value.trim() : '';
+                if (endpoint) mpClient.setEndpoint(endpoint);
+                const result = await mpClient.connect();
+                this._multiplayerConnectPending = false;
+                this.showNotification(result.msg, result.success ? 'success' : 'error');
+                if (!modal.classList.contains('hidden')) this.renderMultiplayerModal();
+            });
+        }
 
         document.getElementById('btn-mp-host').addEventListener('click', async () => {
             const result = await mpClient.createRoom({ name: getName(), maxPlayers: 4 });
@@ -1493,12 +1644,20 @@ window.Game.UI.Screens = {
         });
 
         document.getElementById('btn-mp-join').addEventListener('click', async () => {
-            const roomId = document.getElementById('mp-room-id').value.trim().toUpperCase();
-            if (!roomId) {
-                this.showNotification('Enter a room code first.', 'error');
+            const roomOrKey = document.getElementById('mp-room-id').value.trim();
+            if (!roomOrKey) {
+                this.showNotification('Enter room code, join key, or invite link first.', 'error');
                 return;
             }
-            const result = await mpClient.joinRoom({ roomId, name: getName() });
+
+            const joinMeta = (mpClient && mpClient.decodeJoinKey)
+                ? mpClient.decodeJoinKey(roomOrKey)
+                : null;
+
+            const result = joinMeta
+                ? await mpClient.joinWithKey({ joinKey: roomOrKey, fallbackName: getName() })
+                : await mpClient.joinRoom({ roomId: roomOrKey.toUpperCase(), name: getName() });
+
             this.showNotification(result.msg, result.success ? 'success' : 'error');
         });
 
@@ -1521,6 +1680,14 @@ window.Game.UI.Screens = {
                 if (!modal.classList.contains('hidden')) this.renderMultiplayerModal();
             }, 80);
         });
+
+        const startBtn = document.getElementById('btn-mp-start');
+        if (startBtn) {
+            startBtn.addEventListener('click', () => {
+                mpClient.startMatch();
+                this.showNotification('Start signal sent. Party selection will open for room players.', 'info');
+            });
+        }
     },
 
     renderSaveLoadModal() {
@@ -1881,6 +2048,13 @@ window.Game.UI.Screens = {
         const customScenario = window.Game.App.getCustomScenarioConfig();
         const difficultyMode = window.Game.Engine.Campaign.normalizeDifficultyMode(gameState.difficultyMode || 'medium');
         const difficulties = window.Game.Engine.Campaign.getDifficultyModes();
+        const app = window.Game.App;
+        const multiplayerActive = !!(app && app.isMultiplayerActive && app.isMultiplayerActive());
+        const multiplayerPartySelection = !!(multiplayerActive && app.isMultiplayerPartySelectionActive && app.isMultiplayerPartySelectionActive());
+        const mpState = gameState.multiplayer || {};
+        const mpSelections = (multiplayerActive && app.getMultiplayerPartySelections)
+            ? app.getMultiplayerPartySelections()
+            : {};
         const setupThemes = this._getSetupThemeVariants();
         let setupCardIndex = 0;
         const markSetupCard = (el) => {
@@ -2045,53 +2219,32 @@ window.Game.UI.Screens = {
         markSetupCard(difficultyPanel);
         grid.appendChild(difficultyPanel);
 
-        const multiplayerState = gameState.multiplayer || null;
-        const multiplayerPlayers = (multiplayerState && Array.isArray(multiplayerState.players)) ? multiplayerState.players : [];
-        const multiplayerPanel = document.createElement('div');
-        multiplayerPanel.className = 'setup-scenario-panel setup-mode-panel';
-        multiplayerPanel.innerHTML = `
-            <div class="setup-scenario-title">Multiplayer (8-Turn Barrier)</div>
-            <div class="setup-scenario-desc" style="margin-bottom:8px;">
-                Free-for-all for 3-4 players. Each player finishes 8 campaign turns independently; election starts when all reach 8/8.
-            </div>
-            <div class="setup-scenario-actions" style="grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;">
-                <button class="setup-scenario-btn" id="btn-open-mp-session">
-                    <span class="setup-scenario-btn-label">Open Multiplayer Panel</span>
-                    <span class="setup-scenario-btn-meta">Host, join room code, or matchmaking</span>
-                </button>
-                <button class="setup-scenario-btn" id="btn-refresh-mp-setup">
-                    <span class="setup-scenario-btn-label">Refresh Status</span>
-                    <span class="setup-scenario-btn-meta">Update room and player state</span>
-                </button>
-            </div>
-            <div class="setup-scenario-desc" style="margin-top:10px;">
-                Status: <strong>${this._getMultiplayerStatusLabel(multiplayerState)}</strong>
-                ${multiplayerState && multiplayerState.roomId ? `• Room ${multiplayerState.roomId}` : ''}
-                ${multiplayerState && multiplayerState.seat ? `• Seat ${multiplayerState.seat}` : ''}
-            </div>
-            ${multiplayerPlayers.length > 0 ? `
-                <div class="mp-list" style="max-height:140px;margin-top:8px;">
-                    ${multiplayerPlayers.map(p => `
-                        <div class="mp-pick-card" style="cursor:default;">
-                            <span class="mp-name">Seat ${p.seat}: ${p.name}${(multiplayerState && p.playerId === multiplayerState.playerId) ? ' (You)' : ''}</span>
-                            <span class="mp-loyalty">${p.ready ? 'Ready' : 'Not Ready'}</span>
-                            <span class="mp-corruption">${p.turnsCompleted || 0}/${(multiplayerState && multiplayerState.campaignRequiredTurns) || 8}</span>
-                        </div>
-                    `).join('')}
+        if (multiplayerActive) {
+            const roomPanel = document.createElement('div');
+            roomPanel.className = 'setup-scenario-panel setup-mode-panel';
+            roomPanel.innerHTML = `
+                <div class="setup-scenario-title">Multiplayer Room</div>
+                <p class="setup-scenario-desc">
+                    ${multiplayerPartySelection
+                        ? 'Room is in party selection. Lock one unique party per player.'
+                        : `Room state: ${(mpState.roomState || 'none').toUpperCase()}. Open multiplayer panel for host/start controls.`}
+                </p>
+                <div class="mp-list" style="max-height:180px;">
+                    ${(Array.isArray(mpState.players) ? mpState.players : []).map(player => {
+                        const sel = mpSelections[player.playerId] || null;
+                        const selectionText = sel ? `Party: ${sel.partyName || sel.partyId}` : 'Party: Not selected';
+                        return `
+                            <div class="mp-pick-card" style="cursor:default;">
+                                <span class="mp-name">Seat ${player.seat}: ${player.name}${player.playerId === mpState.playerId ? ' (You)' : ''}</span>
+                                <span class="mp-loyalty">${player.ready ? 'Ready' : 'Not Ready'}</span>
+                                <span class="mp-corruption">${selectionText}</span>
+                            </div>
+                        `;
+                    }).join('')}
                 </div>
-            ` : ''}
-        `;
-        markSetupCard(multiplayerPanel);
-        grid.appendChild(multiplayerPanel);
-
-        const openMpBtn = multiplayerPanel.querySelector('#btn-open-mp-session');
-        if (openMpBtn) {
-            openMpBtn.addEventListener('click', () => this.renderMultiplayerModal());
-        }
-
-        const refreshMpBtn = multiplayerPanel.querySelector('#btn-refresh-mp-setup');
-        if (refreshMpBtn) {
-            refreshMpBtn.addEventListener('click', () => this.renderSetup(gameState));
+            `;
+            markSetupCard(roomPanel);
+            grid.appendChild(roomPanel);
         }
 
         // Add "Create Custom Party" card at top
@@ -2108,6 +2261,10 @@ window.Game.UI.Screens = {
             </div>
         `;
         createCard.addEventListener('click', () => {
+            if (multiplayerPartySelection) {
+                this.showNotification('Custom party creation is disabled during multiplayer room party selection.', 'error');
+                return;
+            }
             document.querySelectorAll('.party-card').forEach(c => c.classList.remove('selected'));
             createCard.classList.add('selected');
             this._showPartyCreator(gameState);
@@ -2134,6 +2291,12 @@ window.Game.UI.Screens = {
             card.addEventListener('click', () => {
                 document.querySelectorAll('.party-card').forEach(c => c.classList.remove('selected'));
                 card.classList.add('selected');
+                if (multiplayerPartySelection) {
+                    const owner = Object.values(mpSelections).find(row => row.partyId === party.id);
+                    if (owner && owner.playerId !== mpState.playerId) {
+                        this.showNotification(`${owner.name || 'Another player'} already locked this party.`, 'error');
+                    }
+                }
                 this._showPartyDetail(party, gameState);
             });
             markSetupCard(card);
@@ -2144,6 +2307,22 @@ window.Game.UI.Screens = {
     _showPartyDetail(party, gameState) {
         const detail = document.getElementById('party-detail');
         if (!detail) return;
+
+        const app = window.Game.App;
+        const multiplayerActive = !!(app && app.isMultiplayerActive && app.isMultiplayerActive());
+        const multiplayerPartySelection = !!(multiplayerActive && app.isMultiplayerPartySelectionActive && app.isMultiplayerPartySelectionActive());
+        const mpState = gameState.multiplayer || {};
+        const selections = (multiplayerActive && app.getMultiplayerPartySelections)
+            ? app.getMultiplayerPartySelections()
+            : {};
+        const owner = Object.values(selections).find(row => row.partyId === party.id) || null;
+        const takenByOther = !!(owner && owner.playerId !== mpState.playerId);
+        const selectedByMe = !!(owner && owner.playerId === mpState.playerId);
+        const buttonLabel = multiplayerPartySelection
+            ? (takenByOther
+                ? `🔒 Locked by ${owner.name || 'Seat ' + owner.seat}`
+                : (selectedByMe ? '✅ Party Locked (You)' : `🔐 Lock ${party.thaiName} For Room`))
+            : `▶ Play as ${party.thaiName}`;
 
         detail.innerHTML = `
             <div class="detail-header" style="border-left: 4px solid ${party.hexColor}">
@@ -2169,11 +2348,24 @@ window.Game.UI.Screens = {
                 </div>
             </div>
             <button class="btn-primary btn-gold" id="btn-select-party" data-party-id="${party.id}">
-                ▶ Play as ${party.thaiName}
+                ${buttonLabel}
             </button>
         `;
 
         document.getElementById('btn-select-party').addEventListener('click', () => {
+            if (multiplayerPartySelection) {
+                if (takenByOther) {
+                    this.showNotification(`${owner.name || 'Another player'} already locked this party.`, 'error');
+                    return;
+                }
+                const result = window.Game.App.submitMultiplayerPartySelection(party.id);
+                this.showNotification(result.msg, result.success ? 'success' : 'error');
+                if (result.success) {
+                    this.renderSetup(gameState);
+                }
+                return;
+            }
+
             gameState.playerPartyId = party.id;
             window.Game.App.transition('STATE_CAMPAIGN');
         });
@@ -2516,6 +2708,12 @@ window.Game.UI.Screens = {
                         ? (gameState.campaignTurn >= maxTurns ? '⏳ Finish & Wait' : '➡️ End Week (Sync)')
                         : (gameState.campaignTurn >= maxTurns ? '🗳️ Hold Election' : '➡️ End Week')}
                 </button>
+                ${waitingForOthers ? `
+                    <div class="setup-scenario-panel" style="margin-top:10px;">
+                        <div class="setup-scenario-title">Waiting Room</div>
+                        <p class="setup-scenario-desc">You finished your campaign turns. Chat while waiting for all players to complete ${maxTurns}/${maxTurns}.</p>
+                    </div>
+                ` : ''}
             </div>
             <div class="action-cards" id="action-cards"></div>
             ${(gameState.campaignPromises && gameState.campaignPromises.length > 0) ? `
@@ -2533,6 +2731,18 @@ window.Game.UI.Screens = {
         // Render action cards
         this._renderActionCards(gameState);
         this._setupCampaignMobileNavigation();
+
+        if (this._shouldRenderMultiplayerChat(gameState)) {
+            const chatMarkup = this._renderMultiplayerChatBox(gameState, 'campaign');
+            if (chatMarkup) {
+                const chatWrap = document.createElement('div');
+                chatWrap.innerHTML = chatMarkup;
+                if (chatWrap.firstElementChild) {
+                    sidebar.appendChild(chatWrap.firstElementChild);
+                    this._bindMultiplayerChatBox(gameState, 'campaign');
+                }
+            }
+        }
 
         // Province click handler for campaign
         this.onProvinceClick = (provinceName) => {
@@ -3243,10 +3453,21 @@ window.Game.UI.Screens = {
         const formateurId = app.getCurrentFormateurId ? app.getCurrentFormateurId() : gameState.playerPartyId;
         const formateurParty = parties.find(p => p.id === formateurId);
         const isPlayerTurn = app.isPlayerCoalitionTurn ? app.isPlayerCoalitionTurn() : true;
-        const pendingOffer = gameState.pendingCoalitionOffer || null;
+        const multiplayerActive = !!(app && app.isMultiplayerActive && app.isMultiplayerActive());
+        const realtimePendingOffer = (multiplayerActive && app.getMyMultiplayerPendingCoalitionOffer)
+            ? app.getMyMultiplayerPendingCoalitionOffer()
+            : null;
+        const pendingOffer = realtimePendingOffer || gameState.pendingCoalitionOffer || null;
         const hasGovernment = !!gameState.governmentPartyId;
         const governmentParty = parties.find(p => p.id === gameState.governmentPartyId);
-        const offeringParty = pendingOffer ? parties.find(p => p.id === pendingOffer.formateurId) : null;
+        const offeringPlayer = realtimePendingOffer
+            ? (gameState.multiplayer && Array.isArray(gameState.multiplayer.players)
+                ? gameState.multiplayer.players.find(p => p.playerId === realtimePendingOffer.fromPlayerId)
+                : null)
+            : null;
+        const offeringParty = (pendingOffer && !realtimePendingOffer)
+            ? parties.find(p => p.id === pendingOffer.formateurId)
+            : null;
         const ministryPool = 20;
         const offeredMinistryTotal = app.getCoalitionOfferedMinistryTotal ? app.getCoalitionOfferedMinistryTotal() : 0;
         const remainingMinistries = Math.max(0, ministryPool - offeredMinistryTotal);
@@ -3270,7 +3491,7 @@ window.Game.UI.Screens = {
                 <p><strong>Ministry Pool:</strong> ${offeredMinistryTotal}/${ministryPool} allocated (${remainingMinistries} left)</p>
                 ${pendingOffer ? `
                     <p class="coalition-warning" style="border-left-color:#f59e0b;">
-                        Coalition Offer: <strong>${offeringParty ? offeringParty.thaiName : 'AI Party'}</strong> invites your party to join.
+                        Coalition Offer: <strong>${realtimePendingOffer ? (offeringPlayer ? offeringPlayer.name : 'Player') : (offeringParty ? offeringParty.thaiName : 'AI Party')}</strong> invites your party to join.
                     </p>
                 ` : ''}
                 <div class="coalition-counter ${coalitionSeats >= 251 ? 'viable' : ''}">
@@ -3343,9 +3564,21 @@ window.Game.UI.Screens = {
                     ${coalitionSeats >= 251 ? `Form Government (${coalitionSeats} seats)` : `Submit ${roundLabel}`}
                 </button>
             ` : `
-                <p class="coalition-warning">AI parties are negotiating coalition rounds.</p>
+                <p class="coalition-warning">Waiting for coalition lead or incoming realtime offer.</p>
             `}
         `;
+
+        if (this._shouldRenderMultiplayerChat(gameState)) {
+            const chatMarkup = this._renderMultiplayerChatBox(gameState, 'coalition');
+            if (chatMarkup) {
+                const chatWrap = document.createElement('div');
+                chatWrap.innerHTML = chatMarkup;
+                if (chatWrap.firstElementChild) {
+                    panel.appendChild(chatWrap.firstElementChild);
+                    this._bindMultiplayerChatBox(gameState, 'coalition');
+                }
+            }
+        }
 
         panel.querySelectorAll('.btn-toggle-coalition').forEach(btn => {
             btn.addEventListener('click', () => {
@@ -3395,10 +3628,30 @@ window.Game.UI.Screens = {
         if (continueBtn) continueBtn.addEventListener('click', () => app.transition('STATE_PARLIAMENT_TERM'));
 
         const acceptOfferBtn = document.getElementById('btn-accept-coalition-offer');
-        if (acceptOfferBtn) acceptOfferBtn.addEventListener('click', () => app.respondToCoalitionOffer(true));
+        if (acceptOfferBtn) {
+            acceptOfferBtn.addEventListener('click', () => {
+                if (realtimePendingOffer && realtimePendingOffer.offerId && app.respondMultiplayerCoalitionOffer) {
+                    const result = app.respondMultiplayerCoalitionOffer(realtimePendingOffer.offerId, true);
+                    this.showNotification(result.msg, result.success ? 'success' : 'error');
+                    this.renderCoalition(gameState);
+                    return;
+                }
+                app.respondToCoalitionOffer(true);
+            });
+        }
 
         const rejectOfferBtn = document.getElementById('btn-reject-coalition-offer');
-        if (rejectOfferBtn) rejectOfferBtn.addEventListener('click', () => app.respondToCoalitionOffer(false));
+        if (rejectOfferBtn) {
+            rejectOfferBtn.addEventListener('click', () => {
+                if (realtimePendingOffer && realtimePendingOffer.offerId && app.respondMultiplayerCoalitionOffer) {
+                    const result = app.respondMultiplayerCoalitionOffer(realtimePendingOffer.offerId, false);
+                    this.showNotification(result.msg, result.success ? 'success' : 'error');
+                    this.renderCoalition(gameState);
+                    return;
+                }
+                app.respondToCoalitionOffer(false);
+            });
+        }
     },
 
     _animateCounterValue(node, targetValue, suffix = '') {
@@ -3521,6 +3774,7 @@ window.Game.UI.Screens = {
             return;
         }
         const isOpposition = gameState.playerRole === 'opposition';
+        const showKeyboardHint = !this._isMobileLayout();
         const parliamentEngine = window.Game.Engine.Parliament;
         const govBillStatus = !isOpposition
             ? parliamentEngine.getGovernmentBillSessionStatus(gameState)
@@ -3845,6 +4099,18 @@ window.Game.UI.Screens = {
         `;
 
         this._runParliamentStatAnimations(main);
+
+        if (this._shouldRenderMultiplayerChat(gameState)) {
+            const chatMarkup = this._renderMultiplayerChatBox(gameState, 'parliament');
+            if (chatMarkup) {
+                const chatWrap = document.createElement('div');
+                chatWrap.innerHTML = chatMarkup;
+                if (chatWrap.firstElementChild) {
+                    main.appendChild(chatWrap.firstElementChild);
+                    this._bindMultiplayerChatBox(gameState, 'parliament');
+                }
+            }
+        }
 
         if (!isOpposition) {
             this._renderBillList(gameState);
@@ -4542,6 +4808,9 @@ window.Game.UI.Screens = {
         );
         if (window.Game.App && typeof window.Game.App.recordGovernmentBillOutcome === 'function') {
             window.Game.App.recordGovernmentBillOutcome(result.passed);
+        }
+        if (result.passed && window.Game.App && typeof window.Game.App.reportMultiplayerGovernmentBillPassed === 'function') {
+            window.Game.App.reportMultiplayerGovernmentBillPassed(bill.name);
         }
 
         // Build effects report HTML

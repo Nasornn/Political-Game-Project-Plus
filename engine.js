@@ -2146,7 +2146,18 @@ window.Game.Engine.Parliament = {
         const rawUsed = Number.isFinite(gameState.governmentBillsVotedThisSession)
             ? gameState.governmentBillsVotedThisSession
             : 0;
-        const used = Math.max(0, Math.floor(rawUsed));
+
+        let sharedUsed = 0;
+        const mp = gameState && gameState.multiplayer;
+        if (mp && mp.enabled && gameState.playerRole === 'government') {
+            const localSession = Math.max(1, Math.floor(Number(gameState.sessionNumber) || 1));
+            const sharedSession = Math.max(1, Math.floor(Number(mp.sharedGovernmentBillSession) || 1));
+            if (localSession === sharedSession) {
+                sharedUsed = Math.max(0, Math.floor(Number(mp.sharedGovernmentBillsUsed) || 0));
+            }
+        }
+
+        const used = Math.max(0, Math.floor(Math.max(rawUsed, sharedUsed)));
         const remaining = Math.max(0, cap - used);
         return { cap, used, remaining, allowed: remaining > 0 };
     },

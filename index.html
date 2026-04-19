@@ -91,6 +91,17 @@
     <!-- Models & Engine -->
     <script src="models.js"></script>
     <script src="engine.js"></script>
+
+    <script>
+        // Hosted multiplayer config (for Netlify/static hosting).
+        // Set multiplayerEndpoint to your public websocket URL, e.g. "wss://your-server.onrender.com".
+        // When lockMultiplayerEndpoint is true, players do not need to configure endpoint manually.
+        window.ANTIGRAVITY_CONFIG = Object.assign({
+            multiplayerEndpoint: '',
+            lockMultiplayerEndpoint: false
+        }, window.ANTIGRAVITY_CONFIG || {});
+    </script>
+
     <script src="multiplayer-client.js"></script>
 
     <!-- UI -->

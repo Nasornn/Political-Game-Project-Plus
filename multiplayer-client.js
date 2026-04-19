@@ -1,8 +1,39 @@
 window.Game = window.Game || {};
 
+function __agResolveConfiguredEndpoint() {
+    try {
+        const cfg = window.ANTIGRAVITY_CONFIG || {};
+        const raw = String(cfg.multiplayerEndpoint || window.__ANTIGRAVITY_MULTIPLAYER_ENDPOINT || '').trim();
+        return raw;
+    } catch (_) {
+        return '';
+    }
+}
+
+function __agResolveEndpointLock() {
+    try {
+        const cfg = window.ANTIGRAVITY_CONFIG || {};
+        if (cfg.lockMultiplayerEndpoint === true) return true;
+        if (cfg.lockMultiplayerEndpoint === false) return false;
+        return !!__agResolveConfiguredEndpoint();
+    } catch (_) {
+        return false;
+    }
+}
+
+function __agResolveDefaultEndpoint() {
+    const configured = __agResolveConfiguredEndpoint();
+    if (configured) return configured;
+    const stored = (window.localStorage && localStorage.getItem('antigravity.multiplayer.endpoint')) || '';
+    const trimmed = String(stored || '').trim();
+    return trimmed || 'ws://localhost:8787';
+}
+
 window.Game.Multiplayer = {
     socket: null,
-    endpoint: (window.localStorage && localStorage.getItem('antigravity.multiplayer.endpoint')) || 'ws://localhost:8787',
+    configuredEndpoint: __agResolveConfiguredEndpoint(),
+    endpointLocked: __agResolveEndpointLock(),
+    endpoint: __agResolveDefaultEndpoint(),
     resumeToken: (window.localStorage && localStorage.getItem('antigravity.multiplayer.resumeToken')) || null,
     connected: false,
     playerId: null,
@@ -10,6 +41,7 @@ window.Game.Multiplayer = {
     _listeners: {},
     _heartbeatTimer: 0,
     _resumeAttempted: false,
+    _inviteAutoJoinAttempted: false,
 
     on(eventName, handler) {
         if (!this._listeners[eventName]) {
@@ -31,12 +63,221 @@ window.Game.Multiplayer = {
 
     setEndpoint(endpoint) {
         const trimmed = String(endpoint || '').trim();
+        if (this.endpointLocked && this.configuredEndpoint) {
+            this.endpoint = this.configuredEndpoint;
+            this._emit('status', { connected: this.connected, endpoint: this.endpoint });
+            return;
+        }
         if (!trimmed) return;
         this.endpoint = trimmed;
         if (window.localStorage) {
             localStorage.setItem('antigravity.multiplayer.endpoint', this.endpoint);
         }
         this._emit('status', { connected: this.connected, endpoint: this.endpoint });
+    },
+
+    buildInviteLink(roomId, opts = {}) {
+        const code = String(roomId || '').trim().toUpperCase();
+        if (!code) return '';
+
+        try {
+            const url = new URL(window.location.href);
+            url.searchParams.set('mpRoom', code);
+
+            const endpoint = String(opts.endpoint || this.endpoint || '').trim();
+            if (endpoint) {
+                url.searchParams.set('mpEndpoint', endpoint);
+            }
+
+            const name = String(opts.name || '').trim();
+            if (name) {
+                url.searchParams.set('mpName', name);
+            }
+
+            url.searchParams.set('mpAutoJoin', '1');
+            return url.toString();
+        } catch (_) {
+            return '';
+        }
+    },
+
+    _encodeBase64Url(raw) {
+        try {
+            return btoa(unescape(encodeURIComponent(String(raw || ''))))
+                .replace(/\+/g, '-')
+                .replace(/\//g, '_')
+                .replace(/=+$/g, '');
+        } catch (_) {
+            return '';
+        }
+    },
+
+    _decodeBase64Url(encoded) {
+        try {
+            const normalized = String(encoded || '').replace(/-/g, '+').replace(/_/g, '/');
+            const padding = (4 - (normalized.length % 4)) % 4;
+            const padded = normalized + '='.repeat(padding);
+            return decodeURIComponent(escape(atob(padded)));
+        } catch (_) {
+            return '';
+        }
+    },
+
+    buildJoinKey(roomId, opts = {}) {
+        const code = String(roomId || '').trim().toUpperCase();
+        if (!code) return '';
+
+        const payload = {
+            v: 1,
+            roomId: code
+        };
+
+        const endpoint = String(opts.endpoint || this.endpoint || '').trim();
+        if (endpoint) {
+            payload.endpoint = endpoint;
+        }
+
+        const name = String(opts.name || '').trim();
+        if (name) {
+            payload.name = name;
+        }
+
+        const encoded = this._encodeBase64Url(JSON.stringify(payload));
+        if (!encoded) return '';
+        return `AG1.${encoded}`;
+    },
+
+    decodeJoinKey(value) {
+        const raw = String(value || '').trim();
+        if (!raw) return null;
+
+        // Support invite URL paste directly in the join field.
+        try {
+            const url = new URL(raw);
+            const roomId = String(url.searchParams.get('mpRoom') || '').trim().toUpperCase();
+            if (roomId) {
+                const endpoint = String(url.searchParams.get('mpEndpoint') || '').trim();
+                const name = String(url.searchParams.get('mpName') || '').trim();
+                return {
+                    roomId,
+                    endpoint: endpoint || null,
+                    name: name || null
+                };
+            }
+        } catch (_) {
+            // Not a URL; continue with join-key decode.
+        }
+
+        const compact = raw.replace(/\s+/g, '');
+        if (!/^AG1\.[A-Za-z0-9_-]+$/.test(compact)) {
+            return null;
+        }
+
+        const encoded = compact.slice(4);
+        const decoded = this._decodeBase64Url(encoded);
+        if (!decoded) return null;
+
+        try {
+            const payload = JSON.parse(decoded);
+            const roomId = String(payload.roomId || '').trim().toUpperCase();
+            if (!roomId) return null;
+            const endpoint = String(payload.endpoint || '').trim();
+            const name = String(payload.name || '').trim();
+            return {
+                roomId,
+                endpoint: endpoint || null,
+                name: name || null
+            };
+        } catch (_) {
+            return null;
+        }
+    },
+
+    async joinWithKey({ joinKey, fallbackName = 'Player' } = {}) {
+        const parsed = this.decodeJoinKey(joinKey);
+        if (!parsed || !parsed.roomId) {
+            return { success: false, msg: 'Invalid join key or invite link.' };
+        }
+
+        if (parsed.endpoint) {
+            this.setEndpoint(parsed.endpoint);
+        }
+
+        const conn = await this.ensureConnection();
+        if (!conn.success) return conn;
+
+        const name = parsed.name || String(fallbackName || '').trim() || 'Player';
+        this._send({ type: 'join_room', roomId: parsed.roomId, name });
+        return {
+            success: true,
+            roomId: parsed.roomId,
+            msg: `Joining room ${parsed.roomId}...`
+        };
+    },
+
+    _readInviteFromUrl() {
+        try {
+            const url = new URL(window.location.href);
+            const roomId = String(url.searchParams.get('mpRoom') || '').trim().toUpperCase();
+            if (!roomId) return null;
+
+            const endpoint = String(url.searchParams.get('mpEndpoint') || '').trim();
+            const name = String(url.searchParams.get('mpName') || '').trim();
+
+            return {
+                roomId,
+                endpoint: endpoint || null,
+                name: name || null
+            };
+        } catch (_) {
+            return null;
+        }
+    },
+
+    _clearInviteFromUrl() {
+        try {
+            const url = new URL(window.location.href);
+            url.searchParams.delete('mpRoom');
+            url.searchParams.delete('mpEndpoint');
+            url.searchParams.delete('mpName');
+            url.searchParams.delete('mpAutoJoin');
+            window.history.replaceState({}, '', url.toString());
+        } catch (_) {
+            // ignore
+        }
+    },
+
+    async autoJoinInviteFromUrl(defaultName = 'Player') {
+        if (this._inviteAutoJoinAttempted) {
+            return { success: false, skipped: true, msg: 'Invite link already processed.' };
+        }
+        this._inviteAutoJoinAttempted = true;
+
+        const invite = this._readInviteFromUrl();
+        if (!invite) {
+            return { success: false, skipped: true, msg: 'No invite link found.' };
+        }
+
+        if (invite.endpoint) {
+            this.setEndpoint(invite.endpoint);
+        }
+
+        const conn = await this.ensureConnection();
+        if (!conn.success) {
+            // Allow retry if initial auto-connect failed.
+            this._inviteAutoJoinAttempted = false;
+            return conn;
+        }
+
+        const name = invite.name || String(defaultName || '').trim() || 'Player';
+        this._send({ type: 'join_room', roomId: invite.roomId, name });
+        this._clearInviteFromUrl();
+
+        return {
+            success: true,
+            roomId: invite.roomId,
+            msg: `Joining room ${invite.roomId} from invite link...`
+        };
     },
 
     async connect() {
@@ -154,12 +395,40 @@ window.Game.Multiplayer = {
         this._send({ type: 'set_ready', ready: !!ready });
     },
 
+    startMatch() {
+        this._send({ type: 'start_match' });
+    },
+
+    selectParty({ partyId, partyName } = {}) {
+        this._send({ type: 'select_party', partyId, partyName });
+    },
+
     reportCampaignTurn(turnsCompleted) {
         this._send({ type: 'campaign_turn_complete', turnsCompleted });
     },
 
     reportCampaignAction(actionType, payload = {}) {
         this._send({ type: 'campaign_action', actionType, payload });
+    },
+
+    sendChat({ text, channel } = {}) {
+        this._send({ type: 'chat_send', text, channel });
+    },
+
+    createCoalitionOffer({ targetPlayerId, targetPartyId, offeredMinistries = 0 } = {}) {
+        this._send({ type: 'coalition_offer_create', targetPlayerId, targetPartyId, offeredMinistries });
+    },
+
+    respondCoalitionOffer({ offerId, accept } = {}) {
+        this._send({ type: 'coalition_offer_response', offerId, accept: !!accept });
+    },
+
+    syncParliamentRole({ role, sessionNumber } = {}) {
+        this._send({ type: 'sync_parliament_role', role, sessionNumber });
+    },
+
+    reportGovernmentBillPassed({ billName, sessionNumber } = {}) {
+        this._send({ type: 'government_bill_passed', billName, sessionNumber });
     },
 
     _send(payload) {
@@ -227,6 +496,14 @@ window.Game.Multiplayer = {
                 this.room = msg.room || this.room;
                 this._emit('match_found', msg);
                 break;
+            case 'party_selection_started':
+                this.room = msg.room || this.room;
+                this._emit('party_selection_started', msg);
+                break;
+            case 'party_selection_update':
+                this.room = msg.room || this.room;
+                this._emit('party_selection_update', msg);
+                break;
             case 'campaign_started':
                 this._emit('campaign_started', msg);
                 break;
@@ -236,11 +513,27 @@ window.Game.Multiplayer = {
             case 'campaign_barrier_complete':
                 this._emit('campaign_barrier_complete', msg);
                 break;
+            case 'coalition_started':
+                this.room = msg.room || this.room;
+                this._emit('coalition_started', msg);
+                break;
+            case 'coalition_offer_pending':
+                this._emit('coalition_offer_pending', msg);
+                break;
+            case 'coalition_offer_resolved':
+                this._emit('coalition_offer_resolved', msg);
+                break;
             case 'campaign_player_auto_completed':
                 this._emit('campaign_player_auto_completed', msg);
                 break;
             case 'election_started':
                 this._emit('election_started', msg);
+                break;
+            case 'chat_message':
+                this._emit('chat_message', msg);
+                break;
+            case 'government_bill_shared_update':
+                this._emit('government_bill_shared_update', msg);
                 break;
             case 'action_applied':
                 this._emit('action_applied', msg);

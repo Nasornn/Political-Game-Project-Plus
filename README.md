@@ -141,9 +141,14 @@ What is implemented
 - Node.js WebSocket backend scaffold in multiplayer-server/
 - Private room code hosting and joining
 - Public matchmaking queue (3-4 players)
-- Ready check and campaign start broadcast
+- Ready check + host-controlled match start
+- Room-level party selection phase (unique party lock per player)
+- Campaign room chatbox during live play
 - Campaign progress tracking per player (0-8)
-- Barrier trigger: election start event fires only when all players reach 8/8
+- Waiting-room behavior for players who finish campaign early
+- Barrier trigger: coalition phase starts only when all players reach 8/8
+- Realtime coalition offer/accept/reject flow for human-controlled parties
+- Shared government bill-cap sync across governing players (multiplayer parliament)
 - Deterministic action order index for concurrent campaign action events
 
 Run multiplayer server
@@ -154,9 +159,10 @@ Run multiplayer server
 Default endpoint is ws://localhost:8787.
 
 Client controls
-- Open Setup screen and use Multiplayer panel, or click the Multiplayer button in the top toolbar.
+- Click the Multiplayer button in the top toolbar.
 - Connect to server endpoint, then Host Room / Join Room / Matchmaking.
-- Set Ready when room is formed.
+- Set Ready, then host clicks Start Match.
+- In setup, each player locks one unique party for that room.
 
 Current integration notes
 - Multiplayer is integrated as an active implementation slice and coexists with single-player.
@@ -171,11 +177,15 @@ Easy Host + Play (Step-by-Step)
 2. Open the game in your browser.
 3. Click `🌐 Multiplayer` in the top toolbar.
 4. Keep endpoint as `ws://localhost:8787` (or your host URL) and click `Connect`.
-5. Host clicks `Host Room` and shares the room code.
-6. Other players click `Join Room`, enter room code, then click `Set Ready`.
-7. When all are ready, campaign starts.
-8. Each player plays 8 turns independently.
-9. Finished players wait; election starts automatically after all players reach 8/8.
+5. Host clicks `Host Room`, then clicks `Copy Join Key`.
+6. Other players paste that key into the Room field and click `Join` (works with room code, join key, or invite link).
+7. Host clicks `Start Match` after all are ready.
+8. All players are moved to room party selection; each player locks one unique party.
+9. Campaign starts; chatbox is available in live multiplayer phases.
+10. Each player plays 8 turns independently.
+11. Finished players wait in waiting state.
+12. Coalition phase starts after all players reach 8/8, with realtime accept/reject offers for player-controlled parties.
+13. Parliament phase syncs governing bill usage: when one governing player passes a bill, shared cap usage updates for all governing players.
 
 Hosting for friends
 - Same Wi-Fi/LAN:
@@ -183,6 +193,14 @@ Hosting for friends
 - Over internet:
 	- Deploy `multiplayer-server` on a cloud/VPS and expose port `8787`.
 	- Use secure websocket endpoint (`wss://...`) if your host supports TLS.
+
+Netlify no-setup mode
+- Netlify can host the game frontend, but multiplayer still needs a separate WebSocket backend.
+- Deploy `multiplayer-server` to a websocket-capable host (Render/Railway/Fly/VPS), then get a public `wss://...` URL.
+- Set your public endpoint once in `index.html`:
+	- `window.ANTIGRAVITY_CONFIG.multiplayerEndpoint = 'wss://your-server-url'`
+	- `window.ANTIGRAVITY_CONFIG.lockMultiplayerEndpoint = true`
+- With endpoint lock enabled, players can host/join directly without manual endpoint setup.
 
 Reconnect behavior
 - The client keeps a resume token in browser storage.

@@ -8,6 +8,7 @@ const MAX_PLAYERS = 4;
 const ROOM_CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 const ROOM_CLEANUP_GRACE_MS = 60000;
 const AUTO_COMPLETE_DISCONNECTED_MS = 180000;
+const CHAT_HISTORY_LIMIT = 120;
 
 const rooms = new Map();
 const queue = [];
@@ -51,19 +52,52 @@ function cleanName(raw, fallback = 'Player') {
 }
 
 function serializeRoom(room) {
+  const pendingOffers = (((room.coalition || {}).offers) || [])
+    .filter((offer) => offer.status === 'pending')
+    .map((offer) => ({
+      offerId: offer.offerId,
+      fromPlayerId: offer.fromPlayerId,
+      targetPlayerId: offer.targetPlayerId,
+      targetPartyId: offer.targetPartyId || null,
+      offeredMinistries: offer.offeredMinistries || 0,
+      status: offer.status,
+      createdAt: offer.createdAt,
+      respondedAt: offer.respondedAt || null
+    }));
+
   return {
     id: room.id,
     state: room.state,
+    ownerPlayerId: room.ownerPlayerId || null,
     minPlayers: room.minPlayers,
     maxPlayers: room.maxPlayers,
     campaignRequiredTurns: room.campaign.requiredTurns,
     actionOrder: room.actionOrder,
+    partySelections: room.players
+      .filter((p) => !!p.selectedPartyId)
+      .map((p) => ({
+        playerId: p.playerId,
+        seat: p.seat,
+        name: p.name,
+        partyId: p.selectedPartyId,
+        partyName: p.selectedPartyName || p.selectedPartyId
+      })),
+    chat: Array.isArray(room.chat) ? room.chat.slice(-40) : [],
+    coalition: {
+      pendingOffers
+    },
+    parliament: {
+      sharedBillUsageBySession: ((room.parliament || {}).sharedBillUsageBySession) || {}
+    },
     players: room.players.map((p) => ({
       playerId: p.playerId,
       name: p.name,
       seat: p.seat,
       ready: p.ready,
       connected: p.connected,
+      role: p.role || null,
+      selectedPartyId: p.selectedPartyId || null,
+      selectedPartyName: p.selectedPartyName || null,
       turnsCompleted: p.turnsCompleted,
       campaignComplete: p.campaignComplete
     }))
@@ -166,15 +200,26 @@ function assignSeat(room) {
 }
 
 function createRoom(ownerWs, name, maxPlayers = MAX_PLAYERS) {
+  const ownerCtx = getSocketContext(ownerWs);
   const room = {
     id: makeRoomCode(),
     state: 'lobby',
+    ownerPlayerId: ownerCtx.playerId || null,
     createdAt: now(),
     lastActivityAt: now(),
     minPlayers: MIN_PLAYERS,
     maxPlayers: Math.max(MIN_PLAYERS, Math.min(MAX_PLAYERS, Number(maxPlayers) || MAX_PLAYERS)),
     players: [],
     actionOrder: 0,
+    chat: [],
+    coalition: {
+      offerSeq: 1,
+      offers: []
+    },
+    parliament: {
+      sharedBillUsageBySession: {},
+      billKeysBySession: {}
+    },
     campaign: {
       requiredTurns: TURN_TARGET,
       startedAt: null,
@@ -297,6 +342,9 @@ function joinRoom(ws, roomId, name) {
     name: cleanName(name, `Player ${seat}`),
     seat,
     ready: false,
+    role: null,
+    selectedPartyId: null,
+    selectedPartyName: null,
     connected: true,
     ws,
     turnsCompleted: 0,
@@ -346,6 +394,10 @@ function leaveRoom(ws) {
     return;
   }
 
+  if (!room.players.find((p) => p.playerId === room.ownerPlayerId)) {
+    room.ownerPlayerId = room.players[0].playerId;
+  }
+
   if (before !== room.players.length) {
     sendRoomUpdate(room);
   }
@@ -356,8 +408,38 @@ function allPlayersReady(room) {
   return room.players.every((p) => p.ready);
 }
 
-function startCampaign(room) {
+function allPlayersSelected(room) {
+  if (room.players.length < room.minPlayers) return false;
+  return room.players.every((p) => !!p.selectedPartyId);
+}
+
+function sanitizePartyId(raw) {
+  const value = String(raw || '').trim().toLowerCase();
+  if (!value) return null;
+  if (!/^[a-z0-9_-]{2,48}$/.test(value)) return null;
+  return value;
+}
+
+function startPartySelection(room) {
   if (room.state !== 'lobby') return;
+  room.state = 'party_selection';
+  room.lastActivityAt = now();
+  room.players.forEach((p) => {
+    p.selectedPartyId = null;
+    p.selectedPartyName = null;
+  });
+
+  broadcastRoom(room, {
+    type: 'party_selection_started',
+    room: serializeRoom(room),
+    at: now()
+  });
+
+  sendRoomUpdate(room);
+}
+
+function startCampaign(room) {
+  if (room.state !== 'party_selection') return;
   room.state = 'campaign';
   room.campaign.startedAt = now();
   room.campaign.barrierCompletedAt = null;
@@ -385,7 +467,7 @@ function maybeCompleteBarrier(room) {
   const allDone = room.players.length >= room.minPlayers && room.players.every((p) => p.campaignComplete);
   if (!allDone) return;
 
-  room.state = 'election';
+  room.state = 'coalition';
   room.campaign.barrierCompletedAt = now();
   room.campaign.electionSeed = Math.floor(Math.random() * 2147483647);
 
@@ -397,13 +479,294 @@ function maybeCompleteBarrier(room) {
   });
 
   broadcastRoom(room, {
-    type: 'election_started',
-    roomId: room.id,
-    electionSeed: room.campaign.electionSeed,
+    type: 'coalition_started',
+    room: serializeRoom(room),
     at: now()
   });
 
   sendRoomUpdate(room);
+}
+
+function applyPartySelection(ws, message) {
+  const room = getRoomBySocket(ws);
+  const ctx = getSocketContext(ws);
+  if (!room || room.state !== 'party_selection') {
+    safeSend(ws, { type: 'error', code: 'party_selection_not_active', message: 'Party selection is not active.' });
+    return;
+  }
+
+  const player = findPlayer(room, ctx.playerId);
+  if (!player) {
+    safeSend(ws, { type: 'error', code: 'player_not_in_room', message: 'Player not in room.' });
+    return;
+  }
+
+  const partyId = sanitizePartyId(message.partyId);
+  if (!partyId) {
+    safeSend(ws, { type: 'error', code: 'invalid_party_id', message: 'Invalid party id.' });
+    return;
+  }
+
+  const alreadyTaken = room.players.find((p) => p.playerId !== player.playerId && p.selectedPartyId === partyId);
+  if (alreadyTaken) {
+    safeSend(ws, {
+      type: 'error',
+      code: 'party_taken',
+      message: `${alreadyTaken.name} already selected this party.`
+    });
+    return;
+  }
+
+  player.selectedPartyId = partyId;
+  player.selectedPartyName = cleanName(message.partyName || partyId, partyId);
+  player.lastSeenAt = now();
+  room.lastActivityAt = now();
+
+  broadcastRoom(room, {
+    type: 'party_selection_update',
+    roomId: room.id,
+    playerId: player.playerId,
+    partyId: player.selectedPartyId,
+    partyName: player.selectedPartyName,
+    room: serializeRoom(room),
+    at: now()
+  });
+
+  sendRoomUpdate(room);
+
+  if (allPlayersSelected(room)) {
+    startCampaign(room);
+  }
+}
+
+function appendChatMessage(ws, message) {
+  const room = getRoomBySocket(ws);
+  const ctx = getSocketContext(ws);
+  if (!room) {
+    safeSend(ws, { type: 'error', code: 'room_not_found', message: 'You are not in a room.' });
+    return;
+  }
+
+  const player = findPlayer(room, ctx.playerId);
+  if (!player) {
+    safeSend(ws, { type: 'error', code: 'player_not_in_room', message: 'Player not in room.' });
+    return;
+  }
+
+  const text = String(message.text || '').trim();
+  if (!text) return;
+  const clipped = text.slice(0, 280);
+  const channel = String(message.channel || room.state || 'global').slice(0, 32);
+
+  const entry = {
+    id: `chat_${now()}_${Math.floor(Math.random() * 1e6)}`,
+    roomId: room.id,
+    playerId: player.playerId,
+    seat: player.seat,
+    name: player.name,
+    text: clipped,
+    channel,
+    at: now()
+  };
+
+  room.chat.push(entry);
+  if (room.chat.length > CHAT_HISTORY_LIMIT) {
+    room.chat = room.chat.slice(-CHAT_HISTORY_LIMIT);
+  }
+  room.lastActivityAt = now();
+  player.lastSeenAt = now();
+
+  broadcastRoom(room, {
+    type: 'chat_message',
+    roomId: room.id,
+    message: entry,
+    at: now()
+  });
+}
+
+function createCoalitionOffer(ws, message) {
+  const room = getRoomBySocket(ws);
+  const ctx = getSocketContext(ws);
+  if (!room || room.state !== 'coalition') {
+    safeSend(ws, { type: 'error', code: 'coalition_not_active', message: 'Coalition phase is not active.' });
+    return;
+  }
+
+  const fromPlayer = findPlayer(room, ctx.playerId);
+  if (!fromPlayer) {
+    safeSend(ws, { type: 'error', code: 'player_not_in_room', message: 'Player not in room.' });
+    return;
+  }
+
+  const targetPlayerId = String(message.targetPlayerId || '').trim();
+  const targetPlayer = findPlayer(room, targetPlayerId);
+  if (!targetPlayer || targetPlayer.playerId === fromPlayer.playerId) {
+    safeSend(ws, { type: 'error', code: 'invalid_target', message: 'Invalid coalition target.' });
+    return;
+  }
+
+  const existingPending = (room.coalition.offers || []).find((offer) =>
+    offer.status === 'pending' &&
+    offer.fromPlayerId === fromPlayer.playerId &&
+    offer.targetPlayerId === targetPlayer.playerId
+  );
+  if (existingPending) {
+    safeSend(ws, { type: 'error', code: 'offer_pending', message: 'A pending offer already exists for this player.' });
+    return;
+  }
+
+  const offer = {
+    offerId: `off_${String(room.coalition.offerSeq++).padStart(5, '0')}`,
+    fromPlayerId: fromPlayer.playerId,
+    targetPlayerId: targetPlayer.playerId,
+    targetPartyId: String(message.targetPartyId || targetPlayer.selectedPartyId || '').trim() || null,
+    offeredMinistries: Math.max(0, Math.min(8, Math.floor(Number(message.offeredMinistries) || 0))),
+    status: 'pending',
+    createdAt: now(),
+    respondedAt: null
+  };
+
+  room.coalition.offers.push(offer);
+  room.lastActivityAt = now();
+
+  broadcastRoom(room, {
+    type: 'coalition_offer_pending',
+    roomId: room.id,
+    offer,
+    at: now()
+  });
+  sendRoomUpdate(room);
+}
+
+function respondCoalitionOffer(ws, message) {
+  const room = getRoomBySocket(ws);
+  const ctx = getSocketContext(ws);
+  if (!room || room.state !== 'coalition') {
+    safeSend(ws, { type: 'error', code: 'coalition_not_active', message: 'Coalition phase is not active.' });
+    return;
+  }
+
+  const offerId = String(message.offerId || '').trim();
+  const offer = (room.coalition.offers || []).find((row) => row.offerId === offerId && row.status === 'pending');
+  if (!offer) {
+    safeSend(ws, { type: 'error', code: 'offer_not_found', message: 'Offer was not found or already resolved.' });
+    return;
+  }
+
+  if (offer.targetPlayerId !== ctx.playerId) {
+    safeSend(ws, { type: 'error', code: 'offer_not_yours', message: 'Only the target player can respond to this offer.' });
+    return;
+  }
+
+  const accepted = !!message.accept;
+  offer.status = accepted ? 'accepted' : 'rejected';
+  offer.respondedAt = now();
+  room.lastActivityAt = now();
+
+  broadcastRoom(room, {
+    type: 'coalition_offer_resolved',
+    roomId: room.id,
+    offerId: offer.offerId,
+    accepted,
+    offer,
+    at: now()
+  });
+  sendRoomUpdate(room);
+}
+
+function publishSharedGovernmentBillUsage(room, sessionNumber, extra = {}) {
+  const sessionKey = String(Math.max(1, Math.floor(Number(sessionNumber) || 1)));
+  const used = Number((room.parliament.sharedBillUsageBySession || {})[sessionKey] || 0);
+  broadcastRoom(room, {
+    type: 'government_bill_shared_update',
+    roomId: room.id,
+    sessionNumber: Number(sessionKey),
+    used,
+    ...extra,
+    at: now()
+  });
+}
+
+function syncParliamentRole(ws, message) {
+  const room = getRoomBySocket(ws);
+  const ctx = getSocketContext(ws);
+  if (!room) {
+    safeSend(ws, { type: 'error', code: 'room_not_found', message: 'You are not in a room.' });
+    return;
+  }
+
+  const player = findPlayer(room, ctx.playerId);
+  if (!player) {
+    safeSend(ws, { type: 'error', code: 'player_not_in_room', message: 'Player not in room.' });
+    return;
+  }
+
+  player.role = (message.role === 'government') ? 'government' : 'opposition';
+  player.parliamentSessionNumber = Math.max(1, Math.floor(Number(message.sessionNumber) || 1));
+  player.lastSeenAt = now();
+  room.lastActivityAt = now();
+  if (room.state !== 'parliament') {
+    room.state = 'parliament';
+  }
+
+  publishSharedGovernmentBillUsage(room, player.parliamentSessionNumber, {
+    byPlayerId: player.playerId,
+    reason: 'session_sync'
+  });
+  sendRoomUpdate(room);
+}
+
+function reportSharedGovernmentBillPassed(ws, message) {
+  const room = getRoomBySocket(ws);
+  const ctx = getSocketContext(ws);
+  if (!room) {
+    safeSend(ws, { type: 'error', code: 'room_not_found', message: 'You are not in a room.' });
+    return;
+  }
+
+  const player = findPlayer(room, ctx.playerId);
+  if (!player) {
+    safeSend(ws, { type: 'error', code: 'player_not_in_room', message: 'Player not in room.' });
+    return;
+  }
+
+  if (player.role !== 'government') {
+    safeSend(ws, { type: 'error', code: 'role_not_allowed', message: 'Only governing players can report passed bills.' });
+    return;
+  }
+
+  const sessionKey = String(Math.max(1, Math.floor(Number(message.sessionNumber) || player.parliamentSessionNumber || 1)));
+  const billName = String(message.billName || '').trim().slice(0, 80) || 'unknown_bill';
+
+  if (!room.parliament.billKeysBySession[sessionKey]) {
+    room.parliament.billKeysBySession[sessionKey] = {};
+  }
+  if (!room.parliament.sharedBillUsageBySession[sessionKey]) {
+    room.parliament.sharedBillUsageBySession[sessionKey] = 0;
+  }
+
+  const billKey = `${player.playerId}::${billName}`;
+  if (room.parliament.billKeysBySession[sessionKey][billKey]) {
+    publishSharedGovernmentBillUsage(room, Number(sessionKey), {
+      byPlayerId: player.playerId,
+      billName,
+      reason: 'duplicate_ignored'
+    });
+    return;
+  }
+
+  room.parliament.billKeysBySession[sessionKey][billKey] = true;
+  room.parliament.sharedBillUsageBySession[sessionKey] += 1;
+  room.actionOrder += 1;
+  player.lastSeenAt = now();
+  room.lastActivityAt = now();
+
+  publishSharedGovernmentBillUsage(room, Number(sessionKey), {
+    byPlayerId: player.playerId,
+    billName,
+    order: room.actionOrder,
+    reason: 'government_bill_passed'
+  });
 }
 
 function applyCampaignTurnComplete(ws, message) {
@@ -643,9 +1006,56 @@ wss.on('connection', (ws) => {
         player.lastSeenAt = now();
         room.lastActivityAt = now();
         sendRoomUpdate(room);
-        if (allPlayersReady(room)) {
-          startCampaign(room);
+        break;
+      }
+      case 'start_match': {
+        const room = getRoomBySocket(ws);
+        if (!room || room.state !== 'lobby') {
+          safeSend(ws, { type: 'error', code: 'lobby_not_active', message: 'Lobby is not active.' });
+          break;
         }
+
+        const owner = room.ownerPlayerId ? findPlayer(room, room.ownerPlayerId) : null;
+        const ownerAvailable = !!(owner && owner.connected);
+        if (!ctx.playerId || (room.ownerPlayerId !== ctx.playerId && ownerAvailable)) {
+          safeSend(ws, { type: 'error', code: 'not_room_owner', message: 'Only host can start the match.' });
+          break;
+        }
+
+        if (!ownerAvailable && room.ownerPlayerId !== ctx.playerId) {
+          room.ownerPlayerId = ctx.playerId;
+        }
+
+        if (!allPlayersReady(room)) {
+          safeSend(ws, { type: 'error', code: 'not_all_ready', message: 'All players must be ready before starting.' });
+          break;
+        }
+
+        startPartySelection(room);
+        break;
+      }
+      case 'select_party': {
+        applyPartySelection(ws, msg);
+        break;
+      }
+      case 'chat_send': {
+        appendChatMessage(ws, msg);
+        break;
+      }
+      case 'coalition_offer_create': {
+        createCoalitionOffer(ws, msg);
+        break;
+      }
+      case 'coalition_offer_response': {
+        respondCoalitionOffer(ws, msg);
+        break;
+      }
+      case 'sync_parliament_role': {
+        syncParliamentRole(ws, msg);
+        break;
+      }
+      case 'government_bill_passed': {
+        reportSharedGovernmentBillPassed(ws, msg);
         break;
       }
       case 'campaign_turn_complete': {

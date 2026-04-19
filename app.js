@@ -131,15 +131,22 @@ window.Game.App = {
             endpoint: (window.Game.Multiplayer && window.Game.Multiplayer.endpoint) || 'ws://localhost:8787',
             roomId: null,
             roomState: 'none',
+            ownerPlayerId: null,
             playerId: null,
             seat: null,
             playerName: '',
+            selectedPartyId: null,
+            partySelections: {},
             campaignRequiredTurns: 8,
             myTurnsCompleted: 0,
             waitingForOthers: false,
             barrierComplete: false,
             players: [],
             progressByPlayerId: {},
+            chatMessages: [],
+            pendingCoalitionOffers: [],
+            sharedGovernmentBillsUsed: 0,
+            sharedGovernmentBillSession: 1,
             lastOrder: 0,
             lastUpdatedAt: 0,
             electionSeed: null
@@ -163,6 +170,15 @@ window.Game.App = {
         if (!state.multiplayer.progressByPlayerId || typeof state.multiplayer.progressByPlayerId !== 'object') {
             state.multiplayer.progressByPlayerId = {};
         }
+        if (!state.multiplayer.partySelections || typeof state.multiplayer.partySelections !== 'object') {
+            state.multiplayer.partySelections = {};
+        }
+        if (!Array.isArray(state.multiplayer.chatMessages)) {
+            state.multiplayer.chatMessages = [];
+        }
+        if (!Array.isArray(state.multiplayer.pendingCoalitionOffers)) {
+            state.multiplayer.pendingCoalitionOffers = [];
+        }
     },
 
     _initMultiplayerBridge() {
@@ -181,7 +197,50 @@ window.Game.App = {
                 window.Game.UI.Screens.renderSetup(this.state);
             } else if (this.currentState === this.STATES.STATE_CAMPAIGN) {
                 window.Game.UI.Screens.renderCampaign(this.state);
+            } else if (this.currentState === this.STATES.STATE_COALITION) {
+                window.Game.UI.Screens.renderCoalition(this.state);
+            } else if (this.currentState === this.STATES.STATE_PARLIAMENT_TERM) {
+                window.Game.UI.Screens.renderParliament(this.state);
             }
+
+            // Keep modal room status in sync (host/join buttons, room code, player list).
+            const modal = document.getElementById('modal');
+            if (!modal || modal.classList.contains('hidden')) return;
+            const title = modal.querySelector('.modal-header h3');
+            const titleText = String((title && title.textContent) || '').toLowerCase();
+            if (titleText.includes('multiplayer session')) {
+                window.Game.UI.Screens.renderMultiplayerModal();
+            }
+        };
+
+        const appendChat = (entry = null) => {
+            ensureState();
+            if (!entry || typeof entry !== 'object') return;
+            const mp = this.state.multiplayer;
+            const list = Array.isArray(mp.chatMessages) ? mp.chatMessages.slice() : [];
+            list.push({ ...entry });
+            mp.chatMessages = list.slice(-120);
+            mp.lastUpdatedAt = Date.now();
+        };
+
+        const upsertOffer = (offer = null) => {
+            ensureState();
+            if (!offer || typeof offer !== 'object') return;
+            const mp = this.state.multiplayer;
+            const rows = Array.isArray(mp.pendingCoalitionOffers) ? mp.pendingCoalitionOffers.slice() : [];
+            const idx = rows.findIndex(row => row.offerId === offer.offerId);
+            if (idx >= 0) rows[idx] = { ...rows[idx], ...offer };
+            else rows.push({ ...offer });
+            mp.pendingCoalitionOffers = rows;
+            mp.lastUpdatedAt = Date.now();
+        };
+
+        const removeOffer = (offerId) => {
+            ensureState();
+            if (!offerId) return;
+            const mp = this.state.multiplayer;
+            mp.pendingCoalitionOffers = (mp.pendingCoalitionOffers || []).filter(row => row.offerId !== offerId);
+            mp.lastUpdatedAt = Date.now();
         };
 
         mpClient.on('status', (payload = {}) => {
@@ -208,9 +267,28 @@ window.Game.App = {
             refreshUi();
         };
 
-        mpClient.on('room_joined', applyRoom);
+        mpClient.on('room_joined', (payload = {}) => {
+            applyRoom(payload);
+            const roomId = payload && payload.room ? payload.room.id : null;
+            if (roomId && window.Game.UI && window.Game.UI.Screens) {
+                window.Game.UI.Screens.showNotification(`Joined room ${roomId}.`, 'success');
+            }
+        });
         mpClient.on('room_update', applyRoom);
         mpClient.on('match_found', applyRoom);
+        mpClient.on('party_selection_started', (payload = {}) => {
+            ensureState();
+            this._applyMultiplayerRoomSnapshot(payload);
+            this.state.multiplayer.waitingForOthers = false;
+            this.state.multiplayer.barrierComplete = false;
+            if (this.currentState !== this.STATES.STATE_SETUP) {
+                this.transition(this.STATES.STATE_SETUP);
+            } else {
+                refreshUi();
+            }
+            window.Game.UI.Screens.showNotification('Match started. Choose and lock your party for this room.', 'info');
+        });
+        mpClient.on('party_selection_update', applyRoom);
 
         mpClient.on('session_resumed', (payload = {}) => {
             ensureState();
@@ -237,10 +315,15 @@ window.Game.App = {
         mpClient.on('campaign_started', (payload = {}) => {
             ensureState();
             this._applyMultiplayerRoomSnapshot(payload);
+            const selectedPartyId = this.getMultiplayerSelectedPartyId();
+            if (selectedPartyId) {
+                this.state.playerPartyId = selectedPartyId;
+                this.state.multiplayer.selectedPartyId = selectedPartyId;
+            }
             this.state.multiplayer.waitingForOthers = false;
             this.state.multiplayer.barrierComplete = false;
             this.state.multiplayer.myTurnsCompleted = 0;
-            if (this.currentState === this.STATES.STATE_SETUP) {
+            if (this.currentState !== this.STATES.STATE_CAMPAIGN) {
                 this.transition(this.STATES.STATE_CAMPAIGN);
             } else {
                 refreshUi();
@@ -268,10 +351,20 @@ window.Game.App = {
             this.state.multiplayer.barrierComplete = true;
             this.state.multiplayer.waitingForOthers = false;
             this.state.multiplayer.electionSeed = payload.electionSeed || null;
-            window.Game.UI.Screens.showNotification('All players finished 8/8. Election begins.', 'success');
+            window.Game.UI.Screens.showNotification('All players finished 8/8. Moving to coalition phase.', 'success');
+            refreshUi();
+        });
 
-            if (this.currentState === this.STATES.STATE_CAMPAIGN) {
-                this.transition(this.STATES.STATE_ELECTION_CALC);
+        mpClient.on('coalition_started', (payload = {}) => {
+            ensureState();
+            this._applyMultiplayerRoomSnapshot(payload);
+            if (!this.state.electionResults) {
+                this._runElection();
+            }
+            if (this.currentState !== this.STATES.STATE_COALITION) {
+                this.transition(this.STATES.STATE_COALITION);
+            } else {
+                refreshUi();
             }
         });
 
@@ -282,6 +375,62 @@ window.Game.App = {
             this.state.multiplayer.electionSeed = payload.electionSeed || this.state.multiplayer.electionSeed || null;
             if (this.currentState === this.STATES.STATE_CAMPAIGN) {
                 this.transition(this.STATES.STATE_ELECTION_CALC);
+            }
+        });
+
+        mpClient.on('coalition_offer_pending', (payload = {}) => {
+            ensureState();
+            if (payload.offer) {
+                upsertOffer(payload.offer);
+                if (payload.offer.targetPlayerId === this.state.multiplayer.playerId) {
+                    const actor = (this.state.multiplayer.players || []).find(p => p.playerId === payload.offer.fromPlayerId);
+                    const fromLabel = actor ? actor.name : 'A player';
+                    window.Game.UI.Screens.showNotification(`${fromLabel} sent you a coalition offer.`, 'info');
+                }
+            }
+            refreshUi();
+        });
+
+        mpClient.on('coalition_offer_resolved', (payload = {}) => {
+            ensureState();
+            const offer = payload.offer || {};
+            removeOffer(payload.offerId || offer.offerId);
+
+            if (payload.accepted && offer.targetPartyId && Array.isArray(this.state.coalitionPartyIds)) {
+                if (!this.state.coalitionPartyIds.includes(offer.targetPartyId)) {
+                    this.state.coalitionPartyIds.push(offer.targetPartyId);
+                }
+            }
+
+            if (offer.targetPlayerId === this.state.multiplayer.playerId) {
+                window.Game.UI.Screens.showNotification(
+                    payload.accepted ? 'You accepted the coalition offer.' : 'You rejected the coalition offer.',
+                    payload.accepted ? 'success' : 'info'
+                );
+            } else if (offer.fromPlayerId === this.state.multiplayer.playerId) {
+                window.Game.UI.Screens.showNotification(
+                    payload.accepted ? 'Coalition offer accepted.' : 'Coalition offer rejected.',
+                    payload.accepted ? 'success' : 'error'
+                );
+            }
+            refreshUi();
+        });
+
+        mpClient.on('chat_message', (payload = {}) => {
+            appendChat(payload.message || null);
+            refreshUi();
+        });
+
+        mpClient.on('government_bill_shared_update', (payload = {}) => {
+            ensureState();
+            const sessionNumber = Math.max(1, Math.floor(Number(payload.sessionNumber) || 1));
+            const used = Math.max(0, Math.floor(Number(payload.used) || 0));
+            this.state.multiplayer.sharedGovernmentBillSession = sessionNumber;
+            this.state.multiplayer.sharedGovernmentBillsUsed = used;
+            this.state.multiplayer.lastOrder = Number(payload.order || this.state.multiplayer.lastOrder || 0);
+            this.state.multiplayer.lastUpdatedAt = Date.now();
+            if (this.currentState === this.STATES.STATE_PARLIAMENT_TERM) {
+                refreshUi();
             }
         });
 
@@ -304,6 +453,26 @@ window.Game.App = {
             }
         });
 
+        if (!this._multiplayerInviteCheckStarted && typeof mpClient.autoJoinInviteFromUrl === 'function') {
+            this._multiplayerInviteCheckStarted = true;
+            const preferredName = (this.state && this.state.multiplayer && this.state.multiplayer.playerName)
+                ? this.state.multiplayer.playerName
+                : 'Player';
+            mpClient.autoJoinInviteFromUrl(preferredName)
+                .then((result) => {
+                    if (!result || result.skipped) return;
+                    if (window.Game.UI && window.Game.UI.Screens) {
+                        window.Game.UI.Screens.showNotification(
+                            result.msg || 'Processed multiplayer invite link.',
+                            result.success ? 'success' : 'error'
+                        );
+                    }
+                })
+                .catch(() => {
+                    // ignore invite parse/connect failures here
+                });
+        }
+
         this._multiplayerBridgeBound = true;
     },
 
@@ -315,13 +484,67 @@ window.Game.App = {
         mp.enabled = true;
         mp.roomId = room.id || mp.roomId;
         mp.roomState = room.state || mp.roomState;
+        mp.ownerPlayerId = room.ownerPlayerId || mp.ownerPlayerId || null;
         mp.campaignRequiredTurns = Number(room.campaignRequiredTurns || mp.campaignRequiredTurns || 8);
         mp.players = Array.isArray(room.players) ? room.players.map(p => ({ ...p })) : mp.players;
+        mp.pendingCoalitionOffers = (room.coalition && Array.isArray(room.coalition.pendingOffers))
+            ? room.coalition.pendingOffers.map(row => ({ ...row }))
+            : mp.pendingCoalitionOffers;
+
+        const selectionRows = Array.isArray(room.partySelections)
+            ? room.partySelections
+            : mp.players
+                .filter(p => p.selectedPartyId)
+                .map(p => ({
+                    playerId: p.playerId,
+                    seat: p.seat,
+                    name: p.name,
+                    partyId: p.selectedPartyId,
+                    partyName: p.selectedPartyName || p.selectedPartyId
+                }));
+
+        const partySelections = {};
+        for (const row of selectionRows) {
+            if (!row || !row.playerId || !row.partyId) continue;
+            partySelections[row.playerId] = {
+                playerId: row.playerId,
+                seat: row.seat || null,
+                name: row.name || row.playerId,
+                partyId: row.partyId,
+                partyName: row.partyName || row.partyId
+            };
+        }
+        mp.partySelections = partySelections;
+
+        const myPick = partySelections[mp.playerId];
+        if (myPick && myPick.partyId) {
+            mp.selectedPartyId = myPick.partyId;
+            this.state.playerPartyId = myPick.partyId;
+        }
+
+        if (Array.isArray(room.chat)) {
+            mp.chatMessages = room.chat.map(entry => ({ ...entry })).slice(-120);
+        }
+
+        if (room.parliament && room.parliament.sharedBillUsageBySession) {
+            const localSession = Math.max(1, Math.floor(Number(this.state.sessionNumber) || 1));
+            const usageMap = room.parliament.sharedBillUsageBySession;
+            const byCurrentSession = Number(usageMap[localSession] || 0);
+            mp.sharedGovernmentBillSession = localSession;
+            mp.sharedGovernmentBillsUsed = Math.max(0, Math.floor(byCurrentSession));
+        }
+
         mp.lastUpdatedAt = Date.now();
 
         if (payload.self && payload.self.playerId) {
             mp.playerId = payload.self.playerId;
             mp.seat = payload.self.seat || mp.seat;
+        }
+
+        const refreshedMyPick = (mp.partySelections || {})[mp.playerId];
+        if (refreshedMyPick && refreshedMyPick.partyId) {
+            mp.selectedPartyId = refreshedMyPick.partyId;
+            this.state.playerPartyId = refreshedMyPick.partyId;
         }
 
         this._updateMultiplayerCampaignProgress(mp.players.map(p => ({
@@ -371,6 +594,160 @@ window.Game.App = {
         if (!this.isMultiplayerActive()) return null;
         const target = Number(this.state.multiplayer.campaignRequiredTurns || 8);
         return Number.isFinite(target) && target > 0 ? target : 8;
+    },
+
+    isMultiplayerHost() {
+        if (!this.isMultiplayerActive()) return false;
+        const mp = this.state.multiplayer || {};
+        return !!(mp.playerId && mp.ownerPlayerId && mp.playerId === mp.ownerPlayerId);
+    },
+
+    isMultiplayerPartySelectionActive() {
+        if (!this.isMultiplayerActive()) return false;
+        const roomState = (this.state.multiplayer.roomState || '').toLowerCase();
+        return roomState === 'party_selection';
+    },
+
+    getMultiplayerPartySelections() {
+        if (!this.isMultiplayerActive()) return {};
+        return { ...(this.state.multiplayer.partySelections || {}) };
+    },
+
+    getMultiplayerSelectedPartyId(playerId = null) {
+        if (!this.isMultiplayerActive()) return null;
+        const mp = this.state.multiplayer || {};
+        const pid = playerId || mp.playerId;
+        if (!pid) return null;
+        const row = (mp.partySelections || {})[pid];
+        return row ? (row.partyId || null) : null;
+    },
+
+    getMultiplayerPlayerByPartyId(partyId) {
+        if (!this.isMultiplayerActive()) return null;
+        if (!partyId) return null;
+        const mp = this.state.multiplayer || {};
+        const players = Array.isArray(mp.players) ? mp.players : [];
+        const selection = Object.values(mp.partySelections || {}).find(row => row.partyId === partyId);
+        if (!selection) return null;
+        const player = players.find(p => p.playerId === selection.playerId) || null;
+        return {
+            ...(player || {}),
+            ...selection
+        };
+    },
+
+    getMyMultiplayerPendingCoalitionOffer() {
+        if (!this.isMultiplayerActive()) return null;
+        const mp = this.state.multiplayer || {};
+        const mine = (mp.pendingCoalitionOffers || []).find(offer => offer.targetPlayerId === mp.playerId);
+        return mine || null;
+    },
+
+    submitMultiplayerPartySelection(partyId) {
+        if (!this.isMultiplayerPartySelectionActive()) {
+            return { success: false, msg: 'Party selection phase is not active.' };
+        }
+        const safePartyId = String(partyId || '').trim();
+        if (!safePartyId) {
+            return { success: false, msg: 'Invalid party selection.' };
+        }
+        const mpClient = window.Game.Multiplayer;
+        if (!mpClient) return { success: false, msg: 'Multiplayer client unavailable.' };
+
+        const party = (this.state.parties || []).find(p => p.id === safePartyId);
+        mpClient.selectParty({
+            partyId: safePartyId,
+            partyName: party ? party.thaiName : safePartyId
+        });
+
+        this.state.multiplayer.selectedPartyId = safePartyId;
+        this.state.playerPartyId = safePartyId;
+        return { success: true, msg: `${party ? party.thaiName : safePartyId} selected for this room.` };
+    },
+
+    sendMultiplayerChatMessage(text, channel = null) {
+        if (!this.isMultiplayerActive()) {
+            return { success: false, msg: 'Multiplayer is not active.' };
+        }
+        const content = String(text || '').trim();
+        if (!content) {
+            return { success: false, msg: 'Message is empty.' };
+        }
+        const mpClient = window.Game.Multiplayer;
+        if (!mpClient) return { success: false, msg: 'Multiplayer client unavailable.' };
+
+        mpClient.sendChat({
+            text: content,
+            channel: channel || this.state.multiplayer.roomState || 'global'
+        });
+        return { success: true, msg: 'Message sent.' };
+    },
+
+    sendMultiplayerCoalitionOffer(targetPartyId, offeredMinistries = 0) {
+        if (!this.isMultiplayerActive()) {
+            return { success: false, msg: 'Multiplayer is not active.' };
+        }
+        if ((this.state.multiplayer.roomState || '').toLowerCase() !== 'coalition') {
+            return { success: false, msg: 'Coalition phase is not active.' };
+        }
+
+        const targetPlayer = this.getMultiplayerPlayerByPartyId(targetPartyId);
+        if (!targetPlayer || !targetPlayer.playerId) {
+            return { success: false, msg: 'Target party is not controlled by a multiplayer player.' };
+        }
+
+        if (targetPlayer.playerId === this.state.multiplayer.playerId) {
+            return { success: false, msg: 'Cannot send coalition offer to yourself.' };
+        }
+
+        const mpClient = window.Game.Multiplayer;
+        if (!mpClient) return { success: false, msg: 'Multiplayer client unavailable.' };
+
+        mpClient.createCoalitionOffer({
+            targetPlayerId: targetPlayer.playerId,
+            targetPartyId,
+            offeredMinistries
+        });
+
+        return { success: true, msg: `Coalition offer sent to ${targetPlayer.name || targetPlayer.playerId}.` };
+    },
+
+    respondMultiplayerCoalitionOffer(offerId, accept) {
+        if (!this.isMultiplayerActive()) {
+            return { success: false, msg: 'Multiplayer is not active.' };
+        }
+        const id = String(offerId || '').trim();
+        if (!id) {
+            return { success: false, msg: 'Offer id is required.' };
+        }
+        const mpClient = window.Game.Multiplayer;
+        if (!mpClient) return { success: false, msg: 'Multiplayer client unavailable.' };
+
+        mpClient.respondCoalitionOffer({ offerId: id, accept: !!accept });
+        return { success: true, msg: accept ? 'Offer accepted.' : 'Offer rejected.' };
+    },
+
+    syncMultiplayerParliamentRole() {
+        if (!this.isMultiplayerActive()) return;
+        if (this.currentState !== this.STATES.STATE_PARLIAMENT_TERM) return;
+        const mpClient = window.Game.Multiplayer;
+        if (!mpClient) return;
+        mpClient.syncParliamentRole({
+            role: this.state.playerRole === 'government' ? 'government' : 'opposition',
+            sessionNumber: this.state.sessionNumber || 1
+        });
+    },
+
+    reportMultiplayerGovernmentBillPassed(billName) {
+        if (!this.isMultiplayerActive()) return;
+        if (this.currentState !== this.STATES.STATE_PARLIAMENT_TERM) return;
+        if (this.state.playerRole !== 'government') return;
+        const mpClient = window.Game.Multiplayer;
+        if (!mpClient) return;
+        mpClient.reportGovernmentBillPassed({
+            billName: String(billName || '').trim(),
+            sessionNumber: this.state.sessionNumber || 1
+        });
     },
 
     _ensureStateDefaults(state) {
@@ -1428,7 +1805,9 @@ window.Game.App = {
 
             case this.STATES.STATE_COALITION:
                 this._initCoalitionFormation();
-                this._runAICoalitionRoundsUntilPlayerOrOutcome();
+                if (!(this.isMultiplayerActive() && String(this.state.multiplayer.roomState || '').toLowerCase() === 'coalition')) {
+                    this._runAICoalitionRoundsUntilPlayerOrOutcome();
+                }
                 window.Game.UI.Screens.renderCoalition(this.state);
                 break;
 
@@ -1476,6 +1855,7 @@ window.Game.App = {
                     // Populate seated MPs
                     window.Game.Engine.Parliament.getSeatedMPs(this.state);
                     window.Game.UI.Screens.renderParliament(this.state);
+                    this.syncMultiplayerParliamentRole();
                 } catch (err) {
                     console.error('Failed entering parliament term:', err);
                     window.Game.UI.Screens.showNotification('Failed to enter parliament. Recovered to coalition.', 'error');
@@ -2003,6 +2383,11 @@ window.Game.App = {
             return { success: true, msg: 'Party removed from proposed coalition.' };
         }
 
+        const multiplayerCoalition = this.isMultiplayerActive()
+            && String(this.state.multiplayer.roomState || '').toLowerCase() === 'coalition';
+        const targetPlayer = multiplayerCoalition ? this.getMultiplayerPlayerByPartyId(inviteeId) : null;
+        const isHumanTarget = !!(targetPlayer && targetPlayer.playerId && targetPlayer.playerId !== this.state.multiplayer.playerId);
+
         const breakdown = this._getInviteBreakdown(formateurId, inviteeId, this.state.coalitionPartyIds);
         const chance = breakdown.chance;
         const accepted = Math.random() < chance;
@@ -2042,6 +2427,25 @@ window.Game.App = {
                     }
                 };
             }
+        }
+
+        if (isHumanTarget) {
+            const existingPending = (this.state.multiplayer.pendingCoalitionOffers || []).find(offer =>
+                offer.status === 'pending'
+                && offer.fromPlayerId === this.state.multiplayer.playerId
+                && offer.targetPlayerId === targetPlayer.playerId
+            );
+            if (existingPending) {
+                return { success: false, msg: `${name} already has a pending coalition offer.` };
+            }
+
+            const send = this.sendMultiplayerCoalitionOffer(inviteeId, this.state.coalitionMinistryOffers[inviteeId] || 0);
+            if (!send.success) return send;
+
+            this.logRunEvent('coalition', `Sent realtime coalition offer to ${name}.`, {
+                turningPointScore: 1.1
+            });
+            return { success: true, msg: `${name} received your coalition offer. Waiting for response...` };
         }
 
         if (!accepted) {
@@ -2565,6 +2969,7 @@ window.Game.App = {
         }
 
         window.Game.UI.Screens.renderParliament(this.state);
+        this.syncMultiplayerParliamentRole();
     },
 
     continueAfterCrisis() {
