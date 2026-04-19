@@ -912,7 +912,14 @@ function autoCompleteDisconnectedCampaignPlayers() {
 const server = http.createServer((req, res) => {
   if (req.url === '/health') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ ok: true, rooms: rooms.size, queue: queue.length, at: now() }));
+    res.end(JSON.stringify({
+      ok: true,
+      rooms: rooms.size,
+      queue: queue.length,
+      minPlayers: MIN_PLAYERS,
+      maxPlayers: MAX_PLAYERS,
+      at: now()
+    }));
     return;
   }
 
