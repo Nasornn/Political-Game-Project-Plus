@@ -738,7 +738,8 @@ window.Game.App = {
     _updateMultiplayerCampaignProgress(progressList = []) {
         const mp = this.state.multiplayer;
         const map = {};
-        let myTurns = mp.myTurnsCompleted || 0;
+        let myTurns = 0;
+        let hasMyProgressRow = false;
         let allDone = progressList.length > 0;
 
         for (const row of progressList) {
@@ -753,14 +754,20 @@ window.Game.App = {
 
             if (row.playerId === mp.playerId) {
                 myTurns = turns;
+                hasMyProgressRow = true;
             }
 
             if (!completed) allDone = false;
         }
 
+        if (mp.playerId && !hasMyProgressRow) {
+            myTurns = 0;
+            allDone = false;
+        }
+
         mp.progressByPlayerId = map;
         mp.myTurnsCompleted = myTurns;
-        mp.waitingForOthers = myTurns >= mp.campaignRequiredTurns && !allDone;
+        mp.waitingForOthers = hasMyProgressRow && myTurns >= mp.campaignRequiredTurns && !allDone;
         mp.barrierComplete = allDone;
         mp.lastUpdatedAt = Date.now();
     },
@@ -2012,6 +2019,27 @@ window.Game.App = {
                 this.state.campaignMomentum = {};
                 this.state.campaignActionMemory = {};
                 this.state._lastCampaignEventId = null;
+
+                // Reset multiplayer campaign counters so a new term/session does not reuse stale 8/8 values.
+                if (this.isMultiplayerActive()) {
+                    const mp = this.state.multiplayer || {};
+                    mp.myTurnsCompleted = 0;
+                    mp.progressByPlayerId = {};
+                    mp.waitingForOthers = false;
+                    mp.barrierComplete = false;
+
+                    const roomState = String(mp.roomState || '').toLowerCase();
+                    if (roomState === 'campaign' && Array.isArray(mp.players) && mp.players.length > 0) {
+                        this._updateMultiplayerCampaignProgress(mp.players.map(p => ({
+                            playerId: p.playerId,
+                            name: p.name,
+                            seat: p.seat,
+                            turnsCompleted: p.turnsCompleted || 0,
+                            completed: !!p.campaignComplete
+                        })));
+                    }
+                }
+
                 // Reset campaign effects
                 for (const d of this.state.districts) {
                     d.campaignBuff = {};
