@@ -2412,6 +2412,12 @@ window.Game.App = {
                 // Ensure heavy data is ready
                 this._ensureHeavyInit();
 
+                // Carry last election totals for delta/logging, then clear stale election cache.
+                this.state.previousElectionSeatTotals = (this.state.electionResults && this.state.electionResults.totalSeats)
+                    ? { ...this.state.electionResults.totalSeats }
+                    : { ...(this.state.previousElectionSeatTotals || {}) };
+                this.state.electionResults = null;
+
                 this.state.campaignTurn = 1;
                 this.state._spawnedPartyThisCampaign = false; // Max 1 emergent party per campaign season
                 this.state.actionPoints = window.Game.Engine.Campaign.getAPPerTurn(this.state);
@@ -2456,6 +2462,7 @@ window.Game.App = {
                 for (const d of this.state.districts) {
                     d.campaignBuff = {};
                     d.ioDebuff = {};
+                    d.winningPartyId = null;
                 }
                 window.Game.Engine.Campaign.initializeAIPersonality(this.state);
                 window.Game.Engine.Campaign.initializeCampaignState(this.state);
