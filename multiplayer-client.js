@@ -395,8 +395,8 @@ window.Game.Multiplayer = {
         this._send({ type: 'set_ready', ready: !!ready });
     },
 
-    startMatch() {
-        this._send({ type: 'start_match' });
+    startMatch({ roomConfig } = {}) {
+        this._send({ type: 'start_match', roomConfig });
     },
 
     selectParty({ partyId, partyName } = {}) {
@@ -433,6 +433,18 @@ window.Game.Multiplayer = {
 
     syncParliamentRole({ role, sessionNumber } = {}) {
         this._send({ type: 'sync_parliament_role', role, sessionNumber });
+    },
+
+    reportParliamentTermComplete({ sessionNumber, parliamentYear } = {}) {
+        this._send({ type: 'parliament_term_complete', sessionNumber, parliamentYear });
+    },
+
+    proposeGovernmentBill({ bill, sessionNumber } = {}) {
+        this._send({ type: 'government_bill_propose', bill, sessionNumber });
+    },
+
+    submitGovernmentBillVote({ billId, stance, sessionNumber, result, patch } = {}) {
+        this._send({ type: 'government_bill_vote', billId, stance, sessionNumber, result, patch });
     },
 
     reportGovernmentBillPassed({ billName, sessionNumber } = {}) {
@@ -518,6 +530,9 @@ window.Game.Multiplayer = {
             case 'campaign_progress':
                 this._emit('campaign_progress', msg);
                 break;
+            case 'parliament_progress':
+                this._emit('parliament_progress', msg);
+                break;
             case 'campaign_barrier_complete':
                 this._emit('campaign_barrier_complete', msg);
                 break;
@@ -545,6 +560,12 @@ window.Game.Multiplayer = {
                 break;
             case 'government_bill_shared_update':
                 this._emit('government_bill_shared_update', msg);
+                break;
+            case 'government_bill_proposed':
+                this._emit('government_bill_proposed', msg);
+                break;
+            case 'government_bill_vote_resolved':
+                this._emit('government_bill_vote_resolved', msg);
                 break;
             case 'action_applied':
                 this._emit('action_applied', msg);

@@ -9,11 +9,25 @@ const ROOM_CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 const ROOM_CLEANUP_GRACE_MS = 60000;
 const AUTO_COMPLETE_DISCONNECTED_MS = 180000;
 const CHAT_HISTORY_LIMIT = 120;
-const CAMPAIGN_EMERGENT_PARTY_CHANCE = 0.14;
+const CAMPAIGN_EMERGENT_PARTY_BASE_CHANCE = 0.14;
 const CAMPAIGN_EMERGENT_PARTY_MAX = 4;
 const CAMPAIGN_EMERGENT_PARTY_MIN_TURN = 3;
 const CAMPAIGN_ACTION_EMERGENT_PARTY_TYPE = 'campaign_emergent_party_spawned';
 const CAMPAIGN_ACTION_PAYLOAD_MAX_BYTES = 4096;
+const PARLIAMENT_PATCH_MAX_BYTES = 65536;
+const GOVERNMENT_BILL_QUEUE_LIMIT = 24;
+
+const CAMPAIGN_EMERGENT_DIFFICULTY_CHANCE = {
+  easy: 0.09,
+  medium: 0.14,
+  hard: 0.2
+};
+
+const CAMPAIGN_EMERGENT_SCENARIO_BONUS = {
+  realistic: 0,
+  balanced: 0.02,
+  custom: 0
+};
 
 const rooms = new Map();
 const queue = [];
@@ -56,8 +70,166 @@ function cleanName(raw, fallback = 'Player') {
   return s || fallback;
 }
 
+function clampNumber(value, minValue, maxValue, fallback = 0) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  if (n < minValue) return minValue;
+  if (n > maxValue) return maxValue;
+  return n;
+}
+
+function normalizeDifficultyMode(mode) {
+  const value = String(mode || '').trim().toLowerCase();
+  if (value === 'easy' || value === 'hard') return value;
+  return 'medium';
+}
+
+function normalizeScenarioMode(mode) {
+  const value = String(mode || '').trim().toLowerCase();
+  if (value === 'balanced' || value === 'custom') return value;
+  return 'realistic';
+}
+
+function sanitizeRoomConfig(rawConfig) {
+  const config = (rawConfig && typeof rawConfig === 'object') ? rawConfig : {};
+  const difficultyMode = normalizeDifficultyMode(config.difficultyMode);
+  const scenarioMode = normalizeScenarioMode(config.scenarioMode);
+  const customChanceRaw = Number(config.emergentPartyChance);
+  const emergentPartyChance = Number.isFinite(customChanceRaw)
+    ? Math.max(0, Math.min(0.8, customChanceRaw))
+    : null;
+
+  return {
+    difficultyMode,
+    scenarioMode,
+    emergentPartyChance
+  };
+}
+
+function getCampaignEmergentPartyChance(room) {
+  const config = sanitizeRoomConfig((room && room.config) || {});
+  if (Number.isFinite(config.emergentPartyChance)) {
+    return Math.max(0, Math.min(0.8, config.emergentPartyChance));
+  }
+
+  const difficultyChance = CAMPAIGN_EMERGENT_DIFFICULTY_CHANCE[config.difficultyMode] || CAMPAIGN_EMERGENT_PARTY_BASE_CHANCE;
+  const scenarioBonus = CAMPAIGN_EMERGENT_SCENARIO_BONUS[config.scenarioMode] || 0;
+  return Math.max(0.02, Math.min(0.8, difficultyChance + scenarioBonus));
+}
+
+function ensureParliamentState(room) {
+  if (!room || !room.parliament || typeof room.parliament !== 'object') {
+    if (room) room.parliament = {};
+    else return;
+  }
+  if (!room.parliament.sharedBillUsageBySession || typeof room.parliament.sharedBillUsageBySession !== 'object') {
+    room.parliament.sharedBillUsageBySession = {};
+  }
+  if (!room.parliament.billKeysBySession || typeof room.parliament.billKeysBySession !== 'object') {
+    room.parliament.billKeysBySession = {};
+  }
+  if (!Array.isArray(room.parliament.pendingGovernmentBills)) {
+    room.parliament.pendingGovernmentBills = [];
+  }
+  if (!room.parliament.termCompletionByPlayerId || typeof room.parliament.termCompletionByPlayerId !== 'object') {
+    room.parliament.termCompletionByPlayerId = {};
+  }
+  if (!Number.isFinite(room.parliament.billSeq) || room.parliament.billSeq < 1) {
+    room.parliament.billSeq = 1;
+  }
+}
+
+function resetParliamentRuntimeState(room) {
+  ensureParliamentState(room);
+  room.parliament.sharedBillUsageBySession = {};
+  room.parliament.billKeysBySession = {};
+  room.parliament.pendingGovernmentBills = [];
+  room.parliament.termCompletionByPlayerId = {};
+  room.parliament.billSeq = 1;
+
+  room.players.forEach((player) => {
+    player.parliamentComplete = false;
+    player.parliamentSessionNumber = 1;
+    room.parliament.termCompletionByPlayerId[player.playerId] = false;
+  });
+}
+
+function sanitizeRegionalPopularityMap(input) {
+  const out = {};
+  if (!input || typeof input !== 'object') return out;
+  for (const [key, value] of Object.entries(input)) {
+    const region = String(key || '').trim().slice(0, 48);
+    if (!region) continue;
+    const delta = Number(value);
+    if (!Number.isFinite(delta)) continue;
+    out[region] = Math.round(clampNumber(delta, -20, 20));
+    if (Object.keys(out).length >= 64) break;
+  }
+  return out;
+}
+
+function sanitizeGovernmentBillPayload(rawBill, fallbackId) {
+  const bill = (rawBill && typeof rawBill === 'object') ? rawBill : {};
+  const effects = (bill.effects && typeof bill.effects === 'object') ? bill.effects : {};
+  const providedId = String(bill.id || '').trim().slice(0, 72);
+
+  return {
+    id: providedId || fallbackId,
+    name: String(bill.name || 'Government Bill').trim().slice(0, 80) || 'Government Bill',
+    description: String(bill.description || '').trim().slice(0, 420),
+    capitalCost: Math.max(0, Math.floor(Number(bill.capitalCost) || 0)),
+    effects: {
+      popularityChanges: sanitizeRegionalPopularityMap(effects.popularityChanges || {}),
+      capitalReward: Math.round(clampNumber(effects.capitalReward || 0, -500, 500)),
+      scandalChange: Math.round(clampNumber(effects.scandalChange || 0, -50, 50))
+    }
+  };
+}
+
+function sanitizeGovernmentBillResolutionResult(input) {
+  const result = (input && typeof input === 'object') ? input : {};
+  const summary = Array.isArray(result.disruptionApplied)
+    ? result.disruptionApplied
+      .map((x) => String(x || '').trim().slice(0, 80))
+      .filter(Boolean)
+      .slice(0, 6)
+    : [];
+
+  return {
+    billName: String(result.billName || '').trim().slice(0, 80) || 'Government Bill',
+    stance: (result.stance === 'support' || result.stance === 'abstain') ? result.stance : 'oppose',
+    aye: Math.max(0, Math.floor(Number(result.aye) || 0)),
+    nay: Math.max(0, Math.floor(Number(result.nay) || 0)),
+    abstain: Math.max(0, Math.floor(Number(result.abstain) || 0)),
+    passed: !!result.passed,
+    popNet: Number.isFinite(Number(result.popNet)) ? Number(result.popNet) : 0,
+    disruptionApplied: summary
+  };
+}
+
+function sanitizeParliamentPatch(input) {
+  if (!input || typeof input !== 'object') return null;
+  let raw;
+  try {
+    raw = JSON.stringify(input);
+  } catch (err) {
+    return null;
+  }
+
+  if (!raw || raw.length > PARLIAMENT_PATCH_MAX_BYTES) {
+    return null;
+  }
+
+  try {
+    return JSON.parse(raw);
+  } catch (err) {
+    return null;
+  }
+}
+
 function serializeRoom(room) {
   const coalitionState = room.coalition || {};
+  ensureParliamentState(room);
   const pendingOffers = (((room.coalition || {}).offers) || [])
     .filter((offer) => offer.status === 'pending')
     .map((offer) => ({
@@ -76,6 +248,7 @@ function serializeRoom(room) {
   return {
     id: room.id,
     state: room.state,
+    config: sanitizeRoomConfig(room.config || {}),
     ownerPlayerId: room.ownerPlayerId || null,
     minPlayers: room.minPlayers,
     maxPlayers: room.maxPlayers,
@@ -107,7 +280,19 @@ function serializeRoom(room) {
       resultsByPlayerId: ((room.election || {}).resultsByPlayerId) || null
     },
     parliament: {
-      sharedBillUsageBySession: ((room.parliament || {}).sharedBillUsageBySession) || {}
+      sharedBillUsageBySession: ((room.parliament || {}).sharedBillUsageBySession) || {},
+      pendingGovernmentBills: (((room.parliament || {}).pendingGovernmentBills) || []).map((bill) => ({
+        id: bill.id,
+        name: bill.name,
+        description: bill.description,
+        capitalCost: bill.capitalCost,
+        effects: bill.effects || {},
+        fromPlayerId: bill.fromPlayerId || null,
+        fromPartyId: bill.fromPartyId || null,
+        sessionNumber: Number.isFinite(Number(bill.sessionNumber)) ? Number(bill.sessionNumber) : 1,
+        proposedAt: Number.isFinite(Number(bill.proposedAt)) ? Number(bill.proposedAt) : null
+      })),
+      termCompletionByPlayerId: ((room.parliament || {}).termCompletionByPlayerId) || {}
     },
     players: room.players.map((p) => ({
       playerId: p.playerId,
@@ -119,7 +304,8 @@ function serializeRoom(room) {
       selectedPartyId: p.selectedPartyId || null,
       selectedPartyName: p.selectedPartyName || null,
       turnsCompleted: p.turnsCompleted,
-      campaignComplete: p.campaignComplete
+      campaignComplete: p.campaignComplete,
+      parliamentComplete: !!p.parliamentComplete
     }))
   };
 }
@@ -135,6 +321,18 @@ function buildProgress(room) {
   }));
 }
 
+function buildParliamentProgress(room) {
+  return room.players.map((p) => ({
+    playerId: p.playerId,
+    name: p.name,
+    seat: p.seat,
+    completed: !!p.parliamentComplete,
+    connected: p.connected,
+    role: p.role || null,
+    sessionNumber: Math.max(1, Math.floor(Number(p.parliamentSessionNumber) || 1))
+  }));
+}
+
 function publishCampaignProgress(room, reason = 'turn_complete', extra = {}) {
   broadcastRoom(room, {
     type: 'campaign_progress',
@@ -142,6 +340,18 @@ function publishCampaignProgress(room, reason = 'turn_complete', extra = {}) {
     order: room.actionOrder,
     reason,
     progress: buildProgress(room),
+    ...extra,
+    at: now()
+  });
+}
+
+function publishParliamentProgress(room, reason = 'term_progress', extra = {}) {
+  broadcastRoom(room, {
+    type: 'parliament_progress',
+    roomId: room.id,
+    order: room.actionOrder,
+    reason,
+    progress: buildParliamentProgress(room),
     ...extra,
     at: now()
   });
@@ -190,7 +400,9 @@ function maybeTriggerCampaignEmergentParty(room, turnNumber, byPlayerId = null) 
   if (emergent.triggeredTurns[turnKey]) return false;
   emergent.triggeredTurns[turnKey] = true;
 
-  if (Math.random() > CAMPAIGN_EMERGENT_PARTY_CHANCE) {
+  const chance = getCampaignEmergentPartyChance(room);
+
+  if (Math.random() > chance) {
     return false;
   }
 
@@ -206,6 +418,7 @@ function maybeTriggerCampaignEmergentParty(room, turnNumber, byPlayerId = null) 
     playerId: byPlayerId || null,
     actionType: CAMPAIGN_ACTION_EMERGENT_PARTY_TYPE,
     payload,
+    chance,
     at: now()
   });
 
@@ -305,6 +518,7 @@ function createRoom(ownerWs, name, maxPlayers = MAX_PLAYERS) {
   const room = {
     id: makeRoomCode(),
     state: 'lobby',
+    config: sanitizeRoomConfig(),
     ownerPlayerId: ownerCtx.playerId || null,
     createdAt: now(),
     lastActivityAt: now(),
@@ -327,7 +541,10 @@ function createRoom(ownerWs, name, maxPlayers = MAX_PLAYERS) {
     },
     parliament: {
       sharedBillUsageBySession: {},
-      billKeysBySession: {}
+      billKeysBySession: {},
+      pendingGovernmentBills: [],
+      termCompletionByPlayerId: {},
+      billSeq: 1
     },
     campaign: {
       requiredTurns: TURN_TARGET,
@@ -480,11 +697,15 @@ function joinRoom(ws, roomId, name) {
     ws,
     turnsCompleted: 0,
     campaignComplete: false,
+    parliamentComplete: false,
+    parliamentSessionNumber: 1,
     joinedAt: now(),
     lastSeenAt: now()
   };
 
   room.players.push(player);
+  ensureParliamentState(room);
+  room.parliament.termCompletionByPlayerId[player.playerId] = false;
   room.lastActivityAt = now();
 
   setSocketContext(ws, { roomId: room.id, seat });
@@ -528,6 +749,9 @@ function leaveRoom(ws) {
 
   const before = room.players.length;
   room.players = room.players.filter((p) => p.playerId !== ctx.playerId);
+  ensureParliamentState(room);
+  delete room.parliament.termCompletionByPlayerId[ctx.playerId];
+  room.parliament.pendingGovernmentBills = (room.parliament.pendingGovernmentBills || []).filter((bill) => bill.fromPlayerId !== ctx.playerId);
   room.lastActivityAt = now();
 
   setSocketContext(ws, { roomId: null, seat: null });
@@ -598,6 +822,14 @@ function getCoalitionSeatTotal(room, partyIds) {
     seats += Math.max(0, Math.floor(Number(totals[partyId] || 0)));
   }
   return seats;
+}
+
+function getGovernmentBillSessionCapFromRoom(room) {
+  ensureCoalitionState(room);
+  const coalitionSeats = getCoalitionSeatTotal(room, room.coalition.coalitionPartyIds || []);
+  if (coalitionSeats >= 340) return 3;
+  if (coalitionSeats >= 251) return 2;
+  return 1;
 }
 
 function findPlayerByPartyId(room, partyId) {
@@ -680,6 +912,7 @@ function makeCoalitionOffer(room, input = {}) {
 
 function finalizeCoalitionGovernment(room, governmentPartyId, coalitionPartyIds) {
   ensureCoalitionState(room);
+  ensureParliamentState(room);
 
   const coalition = uniquePartyIds(coalitionPartyIds);
   const governingPartyId = String(governmentPartyId || coalition[0] || '').trim() || null;
@@ -695,10 +928,20 @@ function finalizeCoalitionGovernment(room, governmentPartyId, coalitionPartyIds)
   room.players.forEach((player) => {
     const partyId = String(player.selectedPartyId || '').trim();
     player.role = (partyId && normalizedCoalition.includes(partyId)) ? 'government' : 'opposition';
+    player.parliamentComplete = false;
+    player.parliamentSessionNumber = 1;
+    room.parliament.termCompletionByPlayerId[player.playerId] = false;
   });
+
+  room.parliament.sharedBillUsageBySession = {};
+  room.parliament.billKeysBySession = {};
+  room.parliament.pendingGovernmentBills = [];
+  room.parliament.billSeq = 1;
 
   room.state = 'parliament';
   room.lastActivityAt = now();
+  room.actionOrder += 1;
+  publishParliamentProgress(room, 'parliament_started', { order: room.actionOrder });
   sendRoomUpdate(room);
 }
 
@@ -835,7 +1078,10 @@ function startPartySelection(room) {
   room.players.forEach((p) => {
     p.selectedPartyId = null;
     p.selectedPartyName = null;
+    p.parliamentComplete = false;
+    p.parliamentSessionNumber = 1;
   });
+  resetParliamentRuntimeState(room);
 
   broadcastRoom(room, {
     type: 'party_selection_started',
@@ -846,8 +1092,9 @@ function startPartySelection(room) {
   sendRoomUpdate(room);
 }
 
-function startCampaign(room) {
-  if (room.state !== 'party_selection') return;
+function startCampaign(room, options = {}) {
+  const reason = String(options.reason || 'campaign_started').trim() || 'campaign_started';
+  if (room.state !== 'party_selection' && room.state !== 'parliament') return;
   room.state = 'campaign';
   room.campaign.startedAt = now();
   room.campaign.barrierCompletedAt = null;
@@ -871,17 +1118,21 @@ function startCampaign(room) {
   room.coalition.invitedPartyIds = [];
   room.coalition.coalitionPartyIds = [];
   room.coalition.governmentPartyId = null;
+  resetParliamentRuntimeState(room);
   room.actionOrder = 0;
 
   room.players.forEach((p) => {
     p.turnsCompleted = 0;
     p.campaignComplete = false;
     p.role = null;
+    p.parliamentComplete = false;
+    p.parliamentSessionNumber = 1;
   });
 
   broadcastRoom(room, {
     type: 'campaign_started',
     room: serializeRoom(room),
+    reason,
     at: now()
   });
 
@@ -1295,6 +1546,7 @@ function respondCoalitionOffer(ws, message) {
 }
 
 function publishSharedGovernmentBillUsage(room, sessionNumber, extra = {}) {
+  ensureParliamentState(room);
   const sessionKey = String(Math.max(1, Math.floor(Number(sessionNumber) || 1)));
   const used = Number((room.parliament.sharedBillUsageBySession || {})[sessionKey] || 0);
   broadcastRoom(room, {
@@ -1321,8 +1573,13 @@ function syncParliamentRole(ws, message) {
     return;
   }
 
+  ensureParliamentState(room);
   player.role = (message.role === 'government') ? 'government' : 'opposition';
   player.parliamentSessionNumber = Math.max(1, Math.floor(Number(message.sessionNumber) || 1));
+  if (typeof player.parliamentComplete !== 'boolean') {
+    player.parliamentComplete = false;
+  }
+  room.parliament.termCompletionByPlayerId[player.playerId] = !!player.parliamentComplete;
   player.lastSeenAt = now();
   room.lastActivityAt = now();
   if (room.state !== 'parliament') {
@@ -1333,6 +1590,215 @@ function syncParliamentRole(ws, message) {
     byPlayerId: player.playerId,
     reason: 'session_sync'
   });
+  publishParliamentProgress(room, 'session_sync', {
+    byPlayerId: player.playerId
+  });
+  sendRoomUpdate(room);
+}
+
+function reportParliamentTermComplete(ws, message) {
+  const room = getRoomBySocket(ws);
+  const ctx = getSocketContext(ws);
+  if (!room || room.state !== 'parliament') {
+    safeSend(ws, { type: 'error', code: 'parliament_not_active', message: 'Parliament phase is not active.' });
+    return;
+  }
+
+  const player = findPlayer(room, ctx.playerId);
+  if (!player) {
+    safeSend(ws, { type: 'error', code: 'player_not_in_room', message: 'Player not in room.' });
+    return;
+  }
+
+  ensureParliamentState(room);
+  const reportedSession = Math.max(1, Math.floor(Number(message.sessionNumber) || player.parliamentSessionNumber || 1));
+  if (player.parliamentComplete) {
+    publishParliamentProgress(room, 'term_complete_duplicate', {
+      byPlayerId: player.playerId,
+      sessionNumber: reportedSession
+    });
+    return;
+  }
+
+  player.parliamentSessionNumber = reportedSession;
+  player.parliamentComplete = true;
+  room.parliament.termCompletionByPlayerId[player.playerId] = true;
+  player.lastSeenAt = now();
+  room.lastActivityAt = now();
+  room.actionOrder += 1;
+
+  publishParliamentProgress(room, 'term_complete', {
+    byPlayerId: player.playerId,
+    sessionNumber: reportedSession,
+    order: room.actionOrder
+  });
+  sendRoomUpdate(room);
+
+  const allDone = room.players.length >= room.minPlayers && room.players.every((p) => !!p.parliamentComplete);
+  if (!allDone) return;
+
+  startCampaign(room, { reason: 'parliament_barrier_complete' });
+}
+
+function proposeGovernmentBill(ws, message) {
+  const room = getRoomBySocket(ws);
+  const ctx = getSocketContext(ws);
+  if (!room || room.state !== 'parliament') {
+    safeSend(ws, { type: 'error', code: 'parliament_not_active', message: 'Parliament phase is not active.' });
+    return;
+  }
+
+  const player = findPlayer(room, ctx.playerId);
+  if (!player) {
+    safeSend(ws, { type: 'error', code: 'player_not_in_room', message: 'Player not in room.' });
+    return;
+  }
+
+  if (player.role !== 'government') {
+    safeSend(ws, { type: 'error', code: 'role_not_allowed', message: 'Only governing players can propose government bills.' });
+    return;
+  }
+
+  if (player.parliamentComplete) {
+    safeSend(ws, { type: 'error', code: 'parliament_already_completed', message: 'You already completed this parliament term.' });
+    return;
+  }
+
+  ensureParliamentState(room);
+  if (room.parliament.pendingGovernmentBills.length >= GOVERNMENT_BILL_QUEUE_LIMIT) {
+    safeSend(ws, { type: 'error', code: 'bill_queue_full', message: 'Pending government bill queue is full.' });
+    return;
+  }
+
+  const fallbackId = `gb_${String(room.parliament.billSeq++).padStart(4, '0')}_${Math.floor(Math.random() * 1e6).toString(36)}`;
+  const bill = sanitizeGovernmentBillPayload(message.bill || {}, fallbackId);
+  if (!bill.name) {
+    safeSend(ws, { type: 'error', code: 'invalid_bill', message: 'Invalid bill payload.' });
+    return;
+  }
+
+  const duplicateId = room.parliament.pendingGovernmentBills.some((row) => row.id === bill.id);
+  if (duplicateId) {
+    bill.id = `${fallbackId}_dup`;
+  }
+
+  const sessionNumber = Math.max(1, Math.floor(Number(message.sessionNumber) || player.parliamentSessionNumber || 1));
+  const sessionKey = String(sessionNumber);
+  player.parliamentSessionNumber = sessionNumber;
+
+  const sessionCap = getGovernmentBillSessionCapFromRoom(room);
+  const usedThisSession = Math.max(0, Math.floor(Number(room.parliament.sharedBillUsageBySession[sessionKey] || 0)));
+  if (usedThisSession >= sessionCap) {
+    safeSend(ws, {
+      type: 'error',
+      code: 'bill_session_cap_reached',
+      message: `Session bill cap reached (${usedThisSession}/${sessionCap}).`
+    });
+    return;
+  }
+
+  if (!room.parliament.sharedBillUsageBySession[sessionKey]) {
+    room.parliament.sharedBillUsageBySession[sessionKey] = 0;
+  }
+  room.parliament.sharedBillUsageBySession[sessionKey] += 1;
+
+  const proposal = {
+    ...bill,
+    fromPlayerId: player.playerId,
+    fromPartyId: player.selectedPartyId || null,
+    sessionNumber,
+    proposedAt: now()
+  };
+
+  room.parliament.pendingGovernmentBills.push(proposal);
+  room.actionOrder += 1;
+  room.lastActivityAt = now();
+  player.lastSeenAt = now();
+
+  broadcastRoom(room, {
+    type: 'government_bill_proposed',
+    roomId: room.id,
+    order: room.actionOrder,
+    byPlayerId: player.playerId,
+    bill: proposal,
+    at: now()
+  });
+
+  publishSharedGovernmentBillUsage(room, sessionNumber, {
+    byPlayerId: player.playerId,
+    billName: bill.name,
+    order: room.actionOrder,
+    reason: 'government_bill_proposed'
+  });
+
+  sendRoomUpdate(room);
+}
+
+function submitGovernmentBillVote(ws, message) {
+  const room = getRoomBySocket(ws);
+  const ctx = getSocketContext(ws);
+  if (!room || room.state !== 'parliament') {
+    safeSend(ws, { type: 'error', code: 'parliament_not_active', message: 'Parliament phase is not active.' });
+    return;
+  }
+
+  const player = findPlayer(room, ctx.playerId);
+  if (!player) {
+    safeSend(ws, { type: 'error', code: 'player_not_in_room', message: 'Player not in room.' });
+    return;
+  }
+
+  if (player.role !== 'opposition') {
+    safeSend(ws, { type: 'error', code: 'role_not_allowed', message: 'Only opposition players can resolve government bill votes.' });
+    return;
+  }
+
+  if (player.parliamentComplete) {
+    safeSend(ws, { type: 'error', code: 'parliament_already_completed', message: 'You already completed this parliament term.' });
+    return;
+  }
+
+  ensureParliamentState(room);
+  const billId = String(message.billId || '').trim();
+  if (!billId) {
+    safeSend(ws, { type: 'error', code: 'missing_bill_id', message: 'Bill id is required.' });
+    return;
+  }
+
+  const idx = room.parliament.pendingGovernmentBills.findIndex((row) => row.id === billId);
+  if (idx === -1) {
+    safeSend(ws, { type: 'error', code: 'bill_not_found', message: 'Pending bill was not found.' });
+    return;
+  }
+
+  const bill = room.parliament.pendingGovernmentBills[idx];
+  const stance = (message.stance === 'support' || message.stance === 'abstain') ? message.stance : 'oppose';
+  const result = sanitizeGovernmentBillResolutionResult(message.result || {});
+  result.billName = result.billName || bill.name;
+  result.stance = stance;
+  const sessionNumber = Math.max(1, Math.floor(Number(message.sessionNumber) || Number(bill.sessionNumber) || player.parliamentSessionNumber || 1));
+  player.parliamentSessionNumber = sessionNumber;
+  const patch = sanitizeParliamentPatch(message.patch);
+
+  room.parliament.pendingGovernmentBills.splice(idx, 1);
+  room.actionOrder += 1;
+  room.lastActivityAt = now();
+  player.lastSeenAt = now();
+
+  broadcastRoom(room, {
+    type: 'government_bill_vote_resolved',
+    roomId: room.id,
+    order: room.actionOrder,
+    byPlayerId: player.playerId,
+    billId: bill.id,
+    bill,
+    stance,
+    sessionNumber,
+    result,
+    patch,
+    at: now()
+  });
+
   sendRoomUpdate(room);
 }
 
@@ -1354,6 +1820,8 @@ function reportSharedGovernmentBillPassed(ws, message) {
     safeSend(ws, { type: 'error', code: 'role_not_allowed', message: 'Only governing players can report passed bills.' });
     return;
   }
+
+  ensureParliamentState(room);
 
   const sessionKey = String(Math.max(1, Math.floor(Number(message.sessionNumber) || player.parliamentSessionNumber || 1)));
   const billName = String(message.billName || '').trim().slice(0, 80) || 'unknown_bill';
@@ -1671,6 +2139,8 @@ wss.on('connection', (ws) => {
           break;
         }
 
+        room.config = sanitizeRoomConfig(msg.roomConfig || room.config || {});
+
         startPartySelection(room);
         break;
       }
@@ -1692,6 +2162,18 @@ wss.on('connection', (ws) => {
       }
       case 'sync_parliament_role': {
         syncParliamentRole(ws, msg);
+        break;
+      }
+      case 'parliament_term_complete': {
+        reportParliamentTermComplete(ws, msg);
+        break;
+      }
+      case 'government_bill_propose': {
+        proposeGovernmentBill(ws, msg);
+        break;
+      }
+      case 'government_bill_vote': {
+        submitGovernmentBillVote(ws, msg);
         break;
       }
       case 'government_bill_passed': {

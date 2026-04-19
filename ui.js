@@ -1690,7 +1690,15 @@ window.Game.UI.Screens = {
         const startBtn = document.getElementById('btn-mp-start');
         if (startBtn) {
             startBtn.addEventListener('click', () => {
-                mpClient.startMatch();
+                const appState = (app && app.state) ? app.state : null;
+                const roomConfig = {
+                    difficultyMode: appState && appState.difficultyMode ? appState.difficultyMode : 'medium',
+                    scenarioMode: appState && appState.scenarioMode ? appState.scenarioMode : 'realistic'
+                };
+                if (window.Game.Engine && window.Game.Engine.Campaign && typeof window.Game.Engine.Campaign.getEmergentPartyChance === 'function') {
+                    roomConfig.emergentPartyChance = window.Game.Engine.Campaign.getEmergentPartyChance(appState || {});
+                }
+                mpClient.startMatch({ roomConfig });
                 this.showNotification('Start signal sent. Party selection will open for room players.', 'info');
             });
         }
@@ -3879,6 +3887,80 @@ window.Game.UI.Screens = {
             ? (coalitionHealth.average >= 70 ? 'coalition-tone-stable' : coalitionHealth.average >= 45 ? 'coalition-tone-uneasy' : coalitionHealth.average >= 25 ? 'coalition-tone-strained' : 'coalition-tone-critical')
             : 'coalition-tone-unknown';
 
+        const app = window.Game.App;
+        const multiplayerState = gameState.multiplayer || {};
+        const multiplayerParliamentWaiting = !!(
+            app
+            && app.isMultiplayerActive
+            && app.isMultiplayerActive()
+            && String(multiplayerState.roomState || '').toLowerCase() === 'parliament'
+            && multiplayerState.parliamentWaitingForOthers
+        );
+        const parliamentProgressMap = (multiplayerState.parliamentProgressByPlayerId && typeof multiplayerState.parliamentProgressByPlayerId === 'object')
+            ? multiplayerState.parliamentProgressByPlayerId
+            : {};
+        const parliamentProgressRows = Array.isArray(multiplayerState.players)
+            ? multiplayerState.players.map((player) => {
+                const row = parliamentProgressMap[player.playerId] || {};
+                return {
+                    playerId: player.playerId,
+                    name: player.name || player.playerId,
+                    completed: !!row.completed,
+                    connected: row.connected !== false && player.connected !== false,
+                    role: row.role || player.role || null
+                };
+            })
+            : [];
+
+        if (multiplayerParliamentWaiting) {
+            main.innerHTML = `
+                <div class="parliament-header-bar">
+                    <div class="parl-info">
+                        <span class="parl-year">Year ${displayedYear} / 4</span>
+                        <span class="parl-session">Session ${gameState.sessionNumber}</span>
+                    </div>
+                    <div class="parl-stats">
+                        <div class="parl-stat" style="border-color:${playerParty.hexColor}">
+                            <span>${playerParty.thaiName}</span>
+                            <span>${isOpposition ? 'Role: Opposition' : `Coalition: <span class="counter-inline" data-counter-value="${coalitionSeats}">${coalitionSeats}</span> seats`}</span>
+                        </div>
+                        <div class="parl-stat">Capital: <strong data-counter-value="${playerParty.politicalCapital}">${playerParty.politicalCapital}</strong></div>
+                        <div class="parl-stat">Grey: <strong data-counter-value="${playerParty.greyMoney}">${playerParty.greyMoney}</strong></div>
+                        <div class="parl-stat danger-stat">Scandal: <strong data-counter-value="${playerParty.scandalMeter}">${playerParty.scandalMeter}</strong>/100</div>
+                    </div>
+                </div>
+
+                <div class="setup-scenario-card" style="margin-top:16px;">
+                    <div class="setup-scenario-title">Waiting For Room Parliament Completion</div>
+                    <p class="setup-scenario-desc">You finished the 4-year term. You are now locked in waiting mode until every player completes this parliament phase.</p>
+                    <div class="campaign-progress-table" style="margin-top:8px;">
+                        ${parliamentProgressRows.map((row) => `
+                            <div class="campaign-progress-row ${row.completed ? 'done' : ''}" style="grid-template-columns: minmax(110px, 1.5fr) minmax(80px, 1fr) minmax(90px, 1fr) minmax(140px, 1fr);">
+                                <span class="campaign-progress-name">${row.name}</span>
+                                <span>${row.role ? row.role.toUpperCase() : 'PLAYER'}</span>
+                                <span>${row.connected ? 'Online' : 'Offline'}</span>
+                                <span>${row.completed ? 'Complete' : 'In Progress'}</span>
+                            </div>
+                        `).join('') || '<div class="placeholder-text">Waiting for parliament progress updates from server...</div>'}
+                    </div>
+                </div>
+            `;
+
+            this._runParliamentStatAnimations(main);
+            if (this._shouldRenderMultiplayerChat(gameState)) {
+                const chatMarkup = this._renderMultiplayerChatBox(gameState, 'parliament');
+                if (chatMarkup) {
+                    const chatWrap = document.createElement('div');
+                    chatWrap.innerHTML = chatMarkup;
+                    if (chatWrap.firstElementChild) {
+                        main.appendChild(chatWrap.firstElementChild);
+                        this._bindMultiplayerChatBox(gameState, 'parliament');
+                    }
+                }
+            }
+            return;
+        }
+
         main.innerHTML = `
             <div class="parliament-header-bar">
                 <div class="parl-info">
@@ -4484,15 +4566,33 @@ window.Game.UI.Screens = {
                 btn.addEventListener('click', () => {
                     const billId = btn.dataset.billId;
                     const stance = btn.dataset.stance;
-                    const result = window.Game.Engine.Parliament.resolveGovernmentBillVote(gameState, billId, stance);
-                    if (result && result.error) {
-                        this.showNotification(result.error, 'error');
-                        return;
+
+                    const realtimeMultiplayerVote = !!(
+                        app
+                        && app.isMultiplayerParliamentRealtimeVotingEnabled
+                        && app.isMultiplayerParliamentRealtimeVotingEnabled()
+                    );
+
+                    let result = null;
+                    if (realtimeMultiplayerVote) {
+                        const sync = app.submitMultiplayerGovernmentBillVote(billId, stance);
+                        if (!sync.success) {
+                            this.showNotification(sync.msg || 'Unable to resolve this vote.', 'error');
+                            return;
+                        }
+                        result = sync.result;
+                    } else {
+                        result = window.Game.Engine.Parliament.resolveGovernmentBillVote(gameState, billId, stance);
+                        if (result && result.error) {
+                            this.showNotification(result.error, 'error');
+                            return;
+                        }
+                        if (!result) {
+                            this.showNotification('Unable to resolve this vote.', 'error');
+                            return;
+                        }
                     }
-                    if (!result) {
-                        this.showNotification('Unable to resolve this vote.', 'error');
-                        return;
-                    }
+
                     window.Game.App.logRunEvent(
                         'parliament',
                         `Opposition vote on ${result.billName}: ${result.passed ? 'PASSED' : 'FAILED'} via ${stance}.`
@@ -4844,6 +4944,22 @@ window.Game.UI.Screens = {
                 this.renderParliament(gameState);
                 return;
             }
+
+            const app = window.Game.App;
+            const realtimeMultiplayerVote = !!(
+                app
+                && app.isMultiplayerParliamentRealtimeVotingEnabled
+                && app.isMultiplayerParliamentRealtimeVotingEnabled()
+            );
+
+            if (realtimeMultiplayerVote) {
+                const submit = app.submitMultiplayerGovernmentBillProposal(bill);
+                this.showNotification(submit.msg, submit.success ? 'success' : 'error');
+                this._updateParliamentStats(gameState);
+                this.renderParliament(gameState);
+                return;
+            }
+
             const playerParty = gameState.parties.find(p => p.id === gameState.playerPartyId);
             const cost = bill.capitalCost || 0;
             if (!playerParty || playerParty.politicalCapital < cost) {

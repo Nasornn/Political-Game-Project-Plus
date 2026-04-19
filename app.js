@@ -143,6 +143,9 @@ window.Game.App = {
             barrierComplete: false,
             players: [],
             progressByPlayerId: {},
+            parliamentProgressByPlayerId: {},
+            parliamentWaitingForOthers: false,
+            parliamentBarrierComplete: false,
             chatMessages: [],
             pendingCoalitionOffers: [],
             sharedGovernmentBillsUsed: 0,
@@ -173,6 +176,9 @@ window.Game.App = {
         if (!Array.isArray(state.multiplayer.players)) state.multiplayer.players = [];
         if (!state.multiplayer.progressByPlayerId || typeof state.multiplayer.progressByPlayerId !== 'object') {
             state.multiplayer.progressByPlayerId = {};
+        }
+        if (!state.multiplayer.parliamentProgressByPlayerId || typeof state.multiplayer.parliamentProgressByPlayerId !== 'object') {
+            state.multiplayer.parliamentProgressByPlayerId = {};
         }
         if (!state.multiplayer.partySelections || typeof state.multiplayer.partySelections !== 'object') {
             state.multiplayer.partySelections = {};
@@ -382,6 +388,9 @@ window.Game.App = {
             this._applyMultiplayerRoomSnapshot(payload);
             this.state.multiplayer.waitingForOthers = false;
             this.state.multiplayer.barrierComplete = false;
+            this.state.multiplayer.parliamentWaitingForOthers = false;
+            this.state.multiplayer.parliamentBarrierComplete = false;
+            this.state.multiplayer.parliamentProgressByPlayerId = {};
             if (this.currentState !== this.STATES.STATE_SETUP) {
                 this.transition(this.STATES.STATE_SETUP);
             } else {
@@ -423,6 +432,9 @@ window.Game.App = {
             }
             this.state.multiplayer.waitingForOthers = false;
             this.state.multiplayer.barrierComplete = false;
+            this.state.multiplayer.parliamentWaitingForOthers = false;
+            this.state.multiplayer.parliamentBarrierComplete = false;
+            this.state.multiplayer.parliamentProgressByPlayerId = {};
             this.state.multiplayer.myTurnsCompleted = 0;
             this.state.multiplayer.electionResultsLocked = false;
             this.state.multiplayer.electionResultsSubmitted = false;
@@ -440,6 +452,17 @@ window.Game.App = {
             ensureState();
             this.state.multiplayer.lastOrder = Number(payload.order || this.state.multiplayer.lastOrder || 0);
             this._updateMultiplayerCampaignProgress(payload.progress || []);
+            refreshUi();
+        });
+
+        mpClient.on('parliament_progress', (payload = {}) => {
+            ensureState();
+            const order = Number(payload.order || 0);
+            const previousOrder = Number(this.state.multiplayer.lastOrder || 0);
+            if (order > 0) {
+                this.state.multiplayer.lastOrder = Math.max(previousOrder, order);
+            }
+            this._updateMultiplayerParliamentProgress(payload.progress || []);
             refreshUi();
         });
 
@@ -584,6 +607,66 @@ window.Game.App = {
             }
         });
 
+        mpClient.on('government_bill_proposed', (payload = {}) => {
+            ensureState();
+            const order = Number(payload.order || 0);
+            const previousOrder = Number(this.state.multiplayer.lastOrder || 0);
+            if (order > 0 && previousOrder > 0 && order <= previousOrder) {
+                return;
+            }
+
+            this.state.multiplayer.lastOrder = Math.max(previousOrder, order);
+            const bill = (payload.bill && typeof payload.bill === 'object') ? payload.bill : null;
+            if (bill && bill.id) {
+                if (!Array.isArray(this.state.governmentBillQueue)) this.state.governmentBillQueue = [];
+                const idx = this.state.governmentBillQueue.findIndex(row => row.id === bill.id);
+                if (idx >= 0) {
+                    this.state.governmentBillQueue[idx] = { ...this.state.governmentBillQueue[idx], ...bill };
+                } else {
+                    this.state.governmentBillQueue.push({ ...bill });
+                }
+            }
+
+            if (window.Game.UI && window.Game.UI.Screens && payload.byPlayerId !== this.state.multiplayer.playerId) {
+                const title = bill && bill.name ? bill.name : 'A government bill';
+                window.Game.UI.Screens.showNotification(`${title} was proposed for opposition vote.`, 'info');
+            }
+
+            this.state.multiplayer.lastUpdatedAt = Date.now();
+
+            refreshUi();
+        });
+
+        mpClient.on('government_bill_vote_resolved', (payload = {}) => {
+            ensureState();
+            const order = Number(payload.order || 0);
+            const previousOrder = Number(this.state.multiplayer.lastOrder || 0);
+            if (order > 0 && previousOrder > 0 && order <= previousOrder) {
+                return;
+            }
+
+            this.state.multiplayer.lastOrder = Math.max(previousOrder, order);
+
+            if (payload.patch && typeof payload.patch === 'object') {
+                this._applyMultiplayerParliamentPatch(payload.patch);
+            } else if (payload.billId) {
+                this.state.governmentBillQueue = (this.state.governmentBillQueue || []).filter(row => row.id !== payload.billId);
+            }
+
+            const result = (payload.result && typeof payload.result === 'object') ? payload.result : null;
+            if (result && window.Game.UI && window.Game.UI.Screens && payload.byPlayerId !== this.state.multiplayer.playerId) {
+                const verdict = result.passed ? 'PASSED' : 'FAILED';
+                window.Game.UI.Screens.showNotification(
+                    `${result.billName || 'Government bill'}: ${verdict} (${result.aye || 0}-${result.nay || 0}-${result.abstain || 0})`,
+                    result.passed ? 'success' : 'info'
+                );
+            }
+
+            this.state.multiplayer.lastUpdatedAt = Date.now();
+
+            refreshUi();
+        });
+
         mpClient.on('action_applied', (payload = {}) => {
             ensureState();
             const actionType = payload.actionType || 'action';
@@ -664,6 +747,18 @@ window.Game.App = {
             ? room.coalition.pendingOffers.map(row => ({ ...row }))
             : mp.pendingCoalitionOffers;
 
+        if (room.config && typeof room.config === 'object') {
+            const difficulty = String(room.config.difficultyMode || '').toLowerCase();
+            if (difficulty === 'easy' || difficulty === 'hard' || difficulty === 'medium') {
+                this.state.difficultyMode = difficulty;
+            }
+
+            const scenario = String(room.config.scenarioMode || '').toLowerCase();
+            if (scenario === 'balanced' || scenario === 'custom' || scenario === 'realistic') {
+                this.state.scenarioMode = scenario;
+            }
+        }
+
         if (room.coalition && typeof room.coalition === 'object') {
             if (Array.isArray(room.coalition.order)) {
                 this.state.coalitionOrder = room.coalition.order.slice();
@@ -730,6 +825,12 @@ window.Game.App = {
             const byCurrentSession = Number(usageMap[localSession] || 0);
             mp.sharedGovernmentBillSession = localSession;
             mp.sharedGovernmentBillsUsed = Math.max(0, Math.floor(byCurrentSession));
+
+            if (Array.isArray(room.parliament.pendingGovernmentBills)) {
+                this.state.governmentBillQueue = room.parliament.pendingGovernmentBills.map(row => ({ ...row }));
+            }
+        } else if (String(room.state || '').toLowerCase() !== 'parliament') {
+            this.state.governmentBillQueue = [];
         }
 
         if (room.election && typeof room.election === 'object') {
@@ -764,6 +865,21 @@ window.Game.App = {
         if (me && (me.role === 'government' || me.role === 'opposition')) {
             this.state.playerRole = me.role;
         }
+
+        const parliamentCompletionMap = (room.parliament && room.parliament.termCompletionByPlayerId && typeof room.parliament.termCompletionByPlayerId === 'object')
+            ? room.parliament.termCompletionByPlayerId
+            : {};
+        this._updateMultiplayerParliamentProgress((mp.players || []).map(p => ({
+            playerId: p.playerId,
+            name: p.name,
+            seat: p.seat,
+            connected: p.connected,
+            role: p.role || null,
+            sessionNumber: p.parliamentSessionNumber || 1,
+            completed: Object.prototype.hasOwnProperty.call(parliamentCompletionMap, p.playerId)
+                ? !!parliamentCompletionMap[p.playerId]
+                : !!p.parliamentComplete
+        })));
 
         this._updateMultiplayerCampaignProgress(mp.players.map(p => ({
             playerId: p.playerId,
@@ -809,6 +925,57 @@ window.Game.App = {
         mp.waitingForOthers = hasMyProgressRow && myTurns >= mp.campaignRequiredTurns && !allDone;
         mp.barrierComplete = allDone;
         mp.lastUpdatedAt = Date.now();
+    },
+
+    _updateMultiplayerParliamentProgress(progressList = []) {
+        const mp = this.state.multiplayer;
+        const map = {};
+        let myCompleted = false;
+        let hasMyRow = false;
+        let allDone = progressList.length > 0;
+
+        for (const row of progressList) {
+            if (!row || !row.playerId) continue;
+            const completed = !!row.completed;
+            map[row.playerId] = {
+                name: row.name || row.playerId,
+                seat: row.seat || null,
+                completed,
+                connected: row.connected !== false,
+                role: row.role || null,
+                sessionNumber: Math.max(1, Math.floor(Number(row.sessionNumber) || 1))
+            };
+
+            if (row.playerId === mp.playerId) {
+                myCompleted = completed;
+                hasMyRow = true;
+            }
+
+            if (!completed) allDone = false;
+        }
+
+        if (mp.playerId && !hasMyRow) {
+            myCompleted = false;
+            allDone = false;
+        }
+
+        mp.parliamentProgressByPlayerId = map;
+        const inParliamentRoom = String(mp.roomState || '').toLowerCase() === 'parliament';
+        mp.parliamentWaitingForOthers = inParliamentRoom && hasMyRow && myCompleted && !allDone;
+        mp.parliamentBarrierComplete = inParliamentRoom && allDone;
+        mp.lastUpdatedAt = Date.now();
+    },
+
+    _isMultiplayerParliamentWaitingBarrier() {
+        if (!this.isMultiplayerActive()) return false;
+        const mp = this.state.multiplayer || {};
+        return String(mp.roomState || '').toLowerCase() === 'parliament' && !!mp.parliamentWaitingForOthers;
+    },
+
+    isMultiplayerParliamentRealtimeVotingEnabled() {
+        if (!this.isMultiplayerActive()) return false;
+        const mp = this.state.multiplayer || {};
+        return String(mp.roomState || '').toLowerCase() === 'parliament';
     },
 
     isMultiplayerActive() {
@@ -973,6 +1140,202 @@ window.Game.App = {
             billName: String(billName || '').trim(),
             sessionNumber: this.state.sessionNumber || 1
         });
+    },
+
+    reportMultiplayerParliamentTermComplete() {
+        if (!this.isMultiplayerActive()) return { success: false, msg: 'Multiplayer is not active.' };
+        if (this.currentState !== this.STATES.STATE_PARLIAMENT_TERM) return { success: false, msg: 'Parliament phase is not active.' };
+
+        const mpClient = window.Game.Multiplayer;
+        if (!mpClient || typeof mpClient.reportParliamentTermComplete !== 'function') {
+            return { success: false, msg: 'Multiplayer client unavailable.' };
+        }
+
+        const mp = this.state.multiplayer || {};
+        const myId = mp.playerId;
+        if (myId && mp.parliamentProgressByPlayerId && mp.parliamentProgressByPlayerId[myId] && mp.parliamentProgressByPlayerId[myId].completed) {
+            mp.parliamentWaitingForOthers = true;
+            return { success: true, msg: 'Already waiting for other players to finish parliament term.' };
+        }
+
+        mpClient.reportParliamentTermComplete({
+            sessionNumber: this.state.sessionNumber || 1,
+            parliamentYear: this.state.parliamentYear || 4
+        });
+
+        if (myId) {
+            if (!mp.parliamentProgressByPlayerId || typeof mp.parliamentProgressByPlayerId !== 'object') {
+                mp.parliamentProgressByPlayerId = {};
+            }
+            mp.parliamentProgressByPlayerId[myId] = {
+                ...(mp.parliamentProgressByPlayerId[myId] || {}),
+                completed: true,
+                role: this.state.playerRole || null,
+                sessionNumber: this.state.sessionNumber || 1
+            };
+        }
+        mp.parliamentWaitingForOthers = true;
+        mp.parliamentBarrierComplete = false;
+        mp.lastUpdatedAt = Date.now();
+        return { success: true, msg: 'Parliament term complete. Waiting for other room players.' };
+    },
+
+    submitMultiplayerGovernmentBillProposal(bill) {
+        if (!this.isMultiplayerParliamentRealtimeVotingEnabled()) {
+            return { success: false, msg: 'Realtime parliament sync is not active for this room.' };
+        }
+        if (this.currentState !== this.STATES.STATE_PARLIAMENT_TERM) {
+            return { success: false, msg: 'Parliament phase is not active.' };
+        }
+        if (this.state.playerRole !== 'government') {
+            return { success: false, msg: 'Only government players can propose bills.' };
+        }
+        if (this._isMultiplayerParliamentWaitingBarrier()) {
+            return { success: false, msg: 'You already completed this parliament term. Waiting for other players.' };
+        }
+
+        const mpClient = window.Game.Multiplayer;
+        if (!mpClient || typeof mpClient.proposeGovernmentBill !== 'function') {
+            return { success: false, msg: 'Multiplayer client unavailable.' };
+        }
+
+        const playerParty = (this.state.parties || []).find(p => p.id === this.state.playerPartyId);
+        if (!playerParty) return { success: false, msg: 'Player party not found.' };
+        const sessionStatus = window.Game.Engine.Parliament.getGovernmentBillSessionStatus(this.state);
+        if (!sessionStatus.allowed) {
+            return { success: false, msg: `Session bill cap reached (${sessionStatus.used}/${sessionStatus.cap}).` };
+        }
+        if (Array.isArray(this.state.governmentBillQueue) && this.state.governmentBillQueue.length >= 24) {
+            return { success: false, msg: 'Too many pending bills in queue. Wait for opposition votes first.' };
+        }
+
+        const normalizedBill = {
+            id: String((bill && bill.id) || `bill_${Date.now()}_${Math.floor(Math.random() * 1e6).toString(36)}`).slice(0, 72),
+            name: String((bill && bill.name) || 'Government Bill').trim().slice(0, 80),
+            description: String((bill && bill.description) || '').trim().slice(0, 420),
+            capitalCost: Math.max(0, Math.floor(Number((bill && bill.capitalCost) || 0))),
+            effects: {
+                popularityChanges: { ...(((bill && bill.effects) || {}).popularityChanges || {}) },
+                capitalReward: Number((((bill && bill.effects) || {}).capitalReward) || 0),
+                scandalChange: Number((((bill && bill.effects) || {}).scandalChange) || 0)
+            }
+        };
+
+        if (!normalizedBill.name) {
+            return { success: false, msg: 'Invalid bill data.' };
+        }
+
+        if (playerParty.politicalCapital < normalizedBill.capitalCost) {
+            return { success: false, msg: `Not enough political capital. Need ${normalizedBill.capitalCost}.` };
+        }
+
+        playerParty.politicalCapital -= normalizedBill.capitalCost;
+        mpClient.proposeGovernmentBill({
+            bill: normalizedBill,
+            sessionNumber: this.state.sessionNumber || 1
+        });
+
+        this.logRunEvent('parliament', `Government bill proposed for multiplayer vote: ${normalizedBill.name}.`);
+        return { success: true, msg: `${normalizedBill.name} sent to opposition voting chamber.` };
+    },
+
+    submitMultiplayerGovernmentBillVote(billId, stance = 'oppose') {
+        if (!this.isMultiplayerParliamentRealtimeVotingEnabled()) {
+            return { success: false, msg: 'Realtime parliament sync is not active for this room.' };
+        }
+        if (this.currentState !== this.STATES.STATE_PARLIAMENT_TERM) {
+            return { success: false, msg: 'Parliament phase is not active.' };
+        }
+        if (this.state.playerRole !== 'opposition') {
+            return { success: false, msg: 'Only opposition players can resolve government bill votes.' };
+        }
+        if (this._isMultiplayerParliamentWaitingBarrier()) {
+            return { success: false, msg: 'You already completed this parliament term. Waiting for other players.' };
+        }
+
+        const mpClient = window.Game.Multiplayer;
+        if (!mpClient || typeof mpClient.submitGovernmentBillVote !== 'function') {
+            return { success: false, msg: 'Multiplayer client unavailable.' };
+        }
+
+        const result = window.Game.Engine.Parliament.resolveGovernmentBillVote(this.state, billId, stance);
+        if (!result || result.error) {
+            return { success: false, msg: (result && result.error) || 'Unable to resolve this vote.' };
+        }
+
+        const patch = this._captureMultiplayerParliamentPatch();
+        if (!patch) {
+            return { success: false, msg: 'Failed to build synchronized parliament update patch.' };
+        }
+        mpClient.submitGovernmentBillVote({
+            billId,
+            stance,
+            sessionNumber: this.state.sessionNumber || 1,
+            result,
+            patch
+        });
+        return { success: true, result };
+    },
+
+    _captureMultiplayerParliamentPatch() {
+        const snapshot = {
+            parties: (this.state.parties || []).map((party) => ({
+                id: party.id,
+                basePopularity: Number(party.basePopularity) || 0,
+                politicalCapital: Number(party.politicalCapital) || 0,
+                greyMoney: Number(party.greyMoney) || 0,
+                scandalMeter: Number(party.scandalMeter) || 0,
+                regionalPopMod: { ...(party.regionalPopMod || {}) }
+            })),
+            passedBillNames: Array.isArray(this.state.passedBillNames) ? this.state.passedBillNames.slice() : [],
+            governmentBillQueue: Array.isArray(this.state.governmentBillQueue) ? this.state.governmentBillQueue.slice() : [],
+            governmentBillLog: Array.isArray(this.state.governmentBillLog) ? this.state.governmentBillLog.slice() : [],
+            governmentBillFailedCooldown: { ...(this.state.governmentBillFailedCooldown || {}) },
+            oppositionWalkoutPlan: this.state.oppositionWalkoutPlan || null,
+            oppositionSplitPlan: this.state.oppositionSplitPlan || null,
+            oppositionPopularityYearTracker: this.state.oppositionPopularityYearTracker || null
+        };
+
+        try {
+            return JSON.parse(JSON.stringify(snapshot));
+        } catch (_) {
+            return null;
+        }
+    },
+
+    _applyMultiplayerParliamentPatch(patch) {
+        if (!patch || typeof patch !== 'object') return;
+
+        if (Array.isArray(patch.parties)) {
+            const byId = {};
+            for (const row of patch.parties) {
+                if (!row || !row.id) continue;
+                byId[row.id] = row;
+            }
+            for (const party of (this.state.parties || [])) {
+                const src = byId[party.id];
+                if (!src) continue;
+                if (Number.isFinite(Number(src.basePopularity))) party.basePopularity = Number(src.basePopularity);
+                if (Number.isFinite(Number(src.politicalCapital))) party.politicalCapital = Math.floor(Number(src.politicalCapital));
+                if (Number.isFinite(Number(src.greyMoney))) party.greyMoney = Math.floor(Number(src.greyMoney));
+                if (Number.isFinite(Number(src.scandalMeter))) party.scandalMeter = Math.floor(Number(src.scandalMeter));
+                if (src.regionalPopMod && typeof src.regionalPopMod === 'object') {
+                    party.regionalPopMod = { ...src.regionalPopMod };
+                }
+            }
+        }
+
+        if (Array.isArray(patch.passedBillNames)) this.state.passedBillNames = patch.passedBillNames.slice();
+        if (Array.isArray(patch.governmentBillQueue)) this.state.governmentBillQueue = patch.governmentBillQueue.slice();
+        if (Array.isArray(patch.governmentBillLog)) this.state.governmentBillLog = patch.governmentBillLog.slice();
+        if (patch.governmentBillFailedCooldown && typeof patch.governmentBillFailedCooldown === 'object') {
+            this.state.governmentBillFailedCooldown = { ...patch.governmentBillFailedCooldown };
+        }
+        this.state.oppositionWalkoutPlan = patch.oppositionWalkoutPlan || null;
+        this.state.oppositionSplitPlan = patch.oppositionSplitPlan || null;
+        if (patch.oppositionPopularityYearTracker && typeof patch.oppositionPopularityYearTracker === 'object') {
+            this.state.oppositionPopularityYearTracker = { ...patch.oppositionPopularityYearTracker };
+        }
     },
 
     requestCoalitionPhaseFromElection() {
@@ -2166,7 +2529,7 @@ window.Game.App = {
                     window.Game.Engine.Parliament.initCoalitionSatisfaction(this.state);
                     window.Game.Engine.Parliament.initializeCabinetPortfolioState(this.state);
                 }
-                if (this.state.playerRole === 'opposition') {
+                if (this.state.playerRole === 'opposition' && !this.isMultiplayerParliamentRealtimeVotingEnabled()) {
                     window.Game.Engine.Parliament.queueGovernmentBillsForOpposition(this.state, 0.5);
                 }
                 try {
@@ -3125,6 +3488,13 @@ window.Game.App = {
         pp.scandalMeter = Math.max(0, pp.scandalMeter - 5);
 
         if (this.state.parliamentYear > 4) {
+            if (this.isMultiplayerActive() && String((this.state.multiplayer && this.state.multiplayer.roomState) || '').toLowerCase() === 'parliament') {
+                const syncResult = this.reportMultiplayerParliamentTermComplete();
+                window.Game.UI.Screens.showNotification(syncResult.msg || 'Parliament term complete. Waiting for other players.', 'info');
+                window.Game.UI.Screens.renderParliament(this.state);
+                return;
+            }
+
             // Term ends — new election
             window.Game.UI.Screens.showNotification("📅 4-year term complete! New election triggered.", 'info');
             setTimeout(() => this.transition('STATE_CAMPAIGN'), 1500);
@@ -3161,7 +3531,18 @@ window.Game.App = {
     },
 
     _canAdvanceParliamentClock() {
-        if (!this.state || this.state.playerRole === 'opposition') return true;
+        if (!this.state) return true;
+        if (this._isMultiplayerParliamentWaitingBarrier()) {
+            window.Game.UI.Screens.showNotification('You already completed this parliament term. Waiting for other players.', 'info');
+            return false;
+        }
+        if (this.state.playerRole === 'opposition') {
+            if (this.isMultiplayerParliamentRealtimeVotingEnabled() && Array.isArray(this.state.governmentBillQueue) && this.state.governmentBillQueue.length > 0) {
+                window.Game.UI.Screens.showNotification('Resolve pending government bill votes before advancing time.', 'error');
+                return false;
+            }
+            return true;
+        }
 
         const cabinet = window.Game.Engine.Parliament.getCabinetAssignmentStatus(this.state);
         if (cabinet && !cabinet.finalized) {
@@ -3254,20 +3635,22 @@ window.Game.App = {
         this.state.oppositionActionsRemaining = 2;
 
         if (this.state.playerRole === 'opposition') {
-            const autoResolved = window.Game.Engine.Parliament.resolvePendingGovernmentBillsAsAbstain(this.state);
-            const govResult = window.Game.Engine.Parliament.queueGovernmentBillsForOpposition(this.state, stepYears);
-            window.Game.Engine.Parliament.applyOppositionIncumbencyWear(this.state, stepYears);
-            if (autoResolved > 0) {
-                window.Game.UI.Screens.showNotification(
-                    `You skipped ${autoResolved} government bill vote(s). They were auto-resolved.`,
-                    'info'
-                );
-            }
-            if (govResult && govResult.queuedCount > 0) {
-                window.Game.UI.Screens.showNotification(
-                    `Government proposed ${govResult.queuedCount} bill(s) for parliamentary vote.`,
-                    'info'
-                );
+            if (!this.isMultiplayerParliamentRealtimeVotingEnabled()) {
+                const autoResolved = window.Game.Engine.Parliament.resolvePendingGovernmentBillsAsAbstain(this.state);
+                const govResult = window.Game.Engine.Parliament.queueGovernmentBillsForOpposition(this.state, stepYears);
+                window.Game.Engine.Parliament.applyOppositionIncumbencyWear(this.state, stepYears);
+                if (autoResolved > 0) {
+                    window.Game.UI.Screens.showNotification(
+                        `You skipped ${autoResolved} government bill vote(s). They were auto-resolved.`,
+                        'info'
+                    );
+                }
+                if (govResult && govResult.queuedCount > 0) {
+                    window.Game.UI.Screens.showNotification(
+                        `Government proposed ${govResult.queuedCount} bill(s) for parliamentary vote.`,
+                        'info'
+                    );
+                }
             }
         }
 
@@ -3309,6 +3692,13 @@ window.Game.App = {
         pp.scandalMeter = Math.max(0, pp.scandalMeter - Math.round(5 * stepYears));
 
         if (this.state.parliamentYear > 4) {
+            if (this.isMultiplayerActive() && String((this.state.multiplayer && this.state.multiplayer.roomState) || '').toLowerCase() === 'parliament') {
+                const syncResult = this.reportMultiplayerParliamentTermComplete();
+                window.Game.UI.Screens.showNotification(syncResult.msg || 'Parliament term complete. Waiting for other players.', 'info');
+                window.Game.UI.Screens.renderParliament(this.state);
+                return;
+            }
+
             window.Game.UI.Screens.showNotification("📅 4-year term complete! New election triggered.", 'info');
             setTimeout(() => this.transition('STATE_CAMPAIGN'), 1500);
             return;
@@ -3335,6 +3725,11 @@ window.Game.App = {
 
     // ─── SESSION PHASE MANAGEMENT ──────────────────────────────
     advanceSessionPhase() {
+        if (this._isMultiplayerParliamentWaitingBarrier()) {
+            window.Game.UI.Screens.showNotification('You already completed this parliament term. Waiting for other players.', 'info');
+            return;
+        }
+
         if (this.state.playerRole === 'government') {
             const cabinet = window.Game.Engine.Parliament.getCabinetAssignmentStatus(this.state);
             if (cabinet && !cabinet.finalized) {
