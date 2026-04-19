@@ -27,6 +27,13 @@
       "description": "Adds Chart Thai Jareon (CTJ) with BanYai 100 in Ratchaburi and Nong Khai.",
       "author": "User Mod",
       "file": "scenarios/chart_thai_jareon_mod.json"
+    },
+    {
+      "id": "streamer_safe_mode",
+      "name": "Streamer Safe Mode (Content Creator)",
+      "description": "Renames all parties to fictional parodies. Ideal for streamers and content creators to avoid strict Thai laws and political drama.",
+      "author": "Antigravity Team",
+      "file": "scenarios/streamer_safe_mode.json"
     }
   ]
 }

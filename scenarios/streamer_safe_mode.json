@@ -1,0 +1,67 @@
+{
+	"name": "Streamer Safe Mode (Censored)",
+	"description": "A fully fictionalized version of all political parties to avoid defamation or legal issues while streaming.",
+	"baseMode": "realistic",
+	"partyOverrides": [
+		{
+			"id": "progressive",
+			"name": "Forward Future",
+			"thaiName": "อนาคตใหม่มุ่งหน้า",
+			"shortName": "FF"
+		},
+		{
+			"id": "pheuthai",
+			"name": "Pheu Chart",
+			"thaiName": "เพื่อชาติไทย",
+			"shortName": "PCT"
+		},
+		{
+			"id": "bhumjaithai",
+			"name": "Bhum Poom",
+			"thaiName": "ภูมิพลัง",
+			"shortName": "BPP"
+		},
+		{
+			"id": "unitedthai",
+			"name": "United Thais",
+			"thaiName": "รวมใจชน",
+			"shortName": "UT"
+		},
+		{
+			"id": "palangpracharath",
+			"name": "Palang Pracha",
+			"thaiName": "พลังรัฐ",
+			"shortName": "PP"
+		},
+		{
+			"id": "klatham",
+			"name": "Kla Thai",
+			"thaiName": "กล้าชน",
+			"shortName": "KT"
+		},
+		{
+			"id": "democrat",
+			"name": "Democracy Alliance",
+			"thaiName": "พันธมิตรประชาธิปไตย",
+			"shortName": "DA"
+		},
+		{
+			"id": "pracha_chat",
+			"name": "Pracha Party",
+			"thaiName": "พรรคประชา",
+			"shortName": "PRC"
+		},
+		{
+			"id": "thai_sang_thai",
+			"name": "Thai Build",
+			"thaiName": "ไทยสร้างสรรค์",
+			"shortName": "TB"
+		},
+		{
+			"id": "chart_thai",
+			"name": "Chart Thai Power",
+			"thaiName": "ชาติไทยพลัง",
+			"shortName": "CTP"
+		}
+	]
+}
