@@ -3,7 +3,7 @@ const { WebSocketServer } = require('ws');
 
 const PORT = Number(process.env.PORT || 8787);
 const TURN_TARGET = 8;
-const MIN_PLAYERS = 3;
+const MIN_PLAYERS = 2;
 const MAX_PLAYERS = 4;
 const ROOM_CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 const ROOM_CLEANUP_GRACE_MS = 60000;

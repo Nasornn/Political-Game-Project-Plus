@@ -140,7 +140,7 @@ This project now includes an initial multiplayer stack for live FFA sessions wit
 What is implemented
 - Node.js WebSocket backend scaffold in multiplayer-server/
 - Private room code hosting and joining
-- Public matchmaking queue (3-4 players)
+- Public matchmaking queue (2-4 players)
 - Ready check + host-controlled match start
 - Room-level party selection phase (unique party lock per player)
 - Campaign room chatbox during live play

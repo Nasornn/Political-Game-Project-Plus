@@ -1,10 +1,10 @@
 # Antigravity Multiplayer Server
 
-WebSocket backend for 3-4 player FFA sessions with an 8-turn campaign barrier.
+WebSocket backend for 2-4 player FFA sessions with an 8-turn campaign barrier.
 
 ## Features
 - Private room codes
-- Public matchmaking queue (fills 3-4 players)
+- Public matchmaking queue (fills 2-4 players)
 - Ready checks + host-controlled start
 - Room-level party selection phase (unique party per player)
 - In-room text chat broadcasting
