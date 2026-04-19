@@ -133,3 +133,58 @@ Minimal example
 		}
 	]
 }
+
+Multiplayer (Implementation Started)
+This project now includes an initial multiplayer stack for live FFA sessions with an 8-turn campaign barrier.
+
+What is implemented
+- Node.js WebSocket backend scaffold in multiplayer-server/
+- Private room code hosting and joining
+- Public matchmaking queue (3-4 players)
+- Ready check and campaign start broadcast
+- Campaign progress tracking per player (0-8)
+- Barrier trigger: election start event fires only when all players reach 8/8
+- Deterministic action order index for concurrent campaign action events
+
+Run multiplayer server
+1. cd multiplayer-server
+2. npm install
+3. npm start
+
+Default endpoint is ws://localhost:8787.
+
+Client controls
+- Open Setup screen and use Multiplayer panel, or click the Multiplayer button in the top toolbar.
+- Connect to server endpoint, then Host Room / Join Room / Matchmaking.
+- Set Ready when room is formed.
+
+Current integration notes
+- Multiplayer is integrated as an active implementation slice and coexists with single-player.
+- Save/Load, Sandbox, and Scenario Mod are disabled during active multiplayer sessions.
+- Campaign UI now shows per-player turn progress and waiting state when you finish 8/8.
+
+Easy Host + Play (Step-by-Step)
+1. Start backend server:
+	 - `cd multiplayer-server`
+	 - `npm install`
+	 - `npm start`
+2. Open the game in your browser.
+3. Click `🌐 Multiplayer` in the top toolbar.
+4. Keep endpoint as `ws://localhost:8787` (or your host URL) and click `Connect`.
+5. Host clicks `Host Room` and shares the room code.
+6. Other players click `Join Room`, enter room code, then click `Set Ready`.
+7. When all are ready, campaign starts.
+8. Each player plays 8 turns independently.
+9. Finished players wait; election starts automatically after all players reach 8/8.
+
+Hosting for friends
+- Same Wi-Fi/LAN:
+	- Use endpoint like `ws://<host-local-ip>:8787`.
+- Over internet:
+	- Deploy `multiplayer-server` on a cloud/VPS and expose port `8787`.
+	- Use secure websocket endpoint (`wss://...`) if your host supports TLS.
+
+Reconnect behavior
+- The client keeps a resume token in browser storage.
+- If a player disconnects, reopening and reconnecting will attempt session resume automatically.
+- Disconnected players that do not return are auto-completed after timeout so the match cannot be held hostage.

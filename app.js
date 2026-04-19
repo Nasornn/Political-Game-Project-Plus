@@ -30,6 +30,7 @@ window.Game.App = {
             scenarioMode: 'realistic',
             difficultyMode: 'medium',
             customScenarioConfig: null,
+            multiplayer: this._createDefaultMultiplayerState(),
             parties: this._initParties('realistic'),
             districts: [],       // Deferred
             partyMPs: {},
@@ -100,6 +101,7 @@ window.Game.App = {
 
         // Wire global utility controls
         window.Game.UI.Screens.bindMetaToolbar();
+        this._initMultiplayerBridge();
 
         // Show setup immediately — don't wait for map
         this.transition('STATE_SETUP');
@@ -122,8 +124,258 @@ window.Game.App = {
         ];
     },
 
+    _createDefaultMultiplayerState() {
+        return {
+            enabled: false,
+            status: 'offline',
+            endpoint: (window.Game.Multiplayer && window.Game.Multiplayer.endpoint) || 'ws://localhost:8787',
+            roomId: null,
+            roomState: 'none',
+            playerId: null,
+            seat: null,
+            playerName: '',
+            campaignRequiredTurns: 8,
+            myTurnsCompleted: 0,
+            waitingForOthers: false,
+            barrierComplete: false,
+            players: [],
+            progressByPlayerId: {},
+            lastOrder: 0,
+            lastUpdatedAt: 0,
+            electionSeed: null
+        };
+    },
+
+    _ensureMultiplayerStateShape(state) {
+        if (!state) return;
+        const base = this._createDefaultMultiplayerState();
+        if (!state.multiplayer || typeof state.multiplayer !== 'object') {
+            state.multiplayer = base;
+            return;
+        }
+
+        state.multiplayer = {
+            ...base,
+            ...state.multiplayer
+        };
+
+        if (!Array.isArray(state.multiplayer.players)) state.multiplayer.players = [];
+        if (!state.multiplayer.progressByPlayerId || typeof state.multiplayer.progressByPlayerId !== 'object') {
+            state.multiplayer.progressByPlayerId = {};
+        }
+    },
+
+    _initMultiplayerBridge() {
+        if (this._multiplayerBridgeBound) return;
+        const mpClient = window.Game.Multiplayer;
+        if (!mpClient) return;
+
+        const ensureState = () => {
+            if (!this.state) return;
+            this._ensureMultiplayerStateShape(this.state);
+        };
+
+        const refreshUi = () => {
+            if (!window.Game.UI || !window.Game.UI.Screens) return;
+            if (this.currentState === this.STATES.STATE_SETUP) {
+                window.Game.UI.Screens.renderSetup(this.state);
+            } else if (this.currentState === this.STATES.STATE_CAMPAIGN) {
+                window.Game.UI.Screens.renderCampaign(this.state);
+            }
+        };
+
+        mpClient.on('status', (payload = {}) => {
+            ensureState();
+            this.state.multiplayer.status = payload.connected ? 'connected' : 'offline';
+            this.state.multiplayer.endpoint = payload.endpoint || this.state.multiplayer.endpoint;
+            if (!payload.connected && this.state.multiplayer.enabled) {
+                this.state.multiplayer.status = 'disconnected';
+            }
+            refreshUi();
+        });
+
+        mpClient.on('connected', (payload = {}) => {
+            ensureState();
+            this.state.multiplayer.playerId = payload.playerId || this.state.multiplayer.playerId;
+            this.state.multiplayer.status = 'connected';
+            this.state.multiplayer.campaignRequiredTurns = payload.turnTarget || this.state.multiplayer.campaignRequiredTurns;
+            refreshUi();
+        });
+
+        const applyRoom = (payload = {}) => {
+            ensureState();
+            this._applyMultiplayerRoomSnapshot(payload);
+            refreshUi();
+        };
+
+        mpClient.on('room_joined', applyRoom);
+        mpClient.on('room_update', applyRoom);
+        mpClient.on('match_found', applyRoom);
+
+        mpClient.on('session_resumed', (payload = {}) => {
+            ensureState();
+            if (payload.self && payload.self.playerId) {
+                this.state.multiplayer.playerId = payload.self.playerId;
+                this.state.multiplayer.seat = payload.self.seat || this.state.multiplayer.seat;
+            }
+            this.state.multiplayer.status = 'connected';
+            this.state.multiplayer.lastUpdatedAt = Date.now();
+            if (window.Game.UI && window.Game.UI.Screens) {
+                window.Game.UI.Screens.showNotification('Multiplayer session resumed.', 'success');
+            }
+            refreshUi();
+        });
+
+        mpClient.on('resume_failed', (payload = {}) => {
+            ensureState();
+            const message = payload.message || 'Could not resume previous session.';
+            if (window.Game.UI && window.Game.UI.Screens) {
+                window.Game.UI.Screens.showNotification(message, 'info');
+            }
+        });
+
+        mpClient.on('campaign_started', (payload = {}) => {
+            ensureState();
+            this._applyMultiplayerRoomSnapshot(payload);
+            this.state.multiplayer.waitingForOthers = false;
+            this.state.multiplayer.barrierComplete = false;
+            this.state.multiplayer.myTurnsCompleted = 0;
+            if (this.currentState === this.STATES.STATE_SETUP) {
+                this.transition(this.STATES.STATE_CAMPAIGN);
+            } else {
+                refreshUi();
+            }
+            window.Game.UI.Screens.showNotification('Multiplayer campaign started: finish 8 turns.', 'info');
+        });
+
+        mpClient.on('campaign_progress', (payload = {}) => {
+            ensureState();
+            this.state.multiplayer.lastOrder = Number(payload.order || this.state.multiplayer.lastOrder || 0);
+            this._updateMultiplayerCampaignProgress(payload.progress || []);
+            refreshUi();
+        });
+
+        mpClient.on('campaign_player_auto_completed', (payload = {}) => {
+            ensureState();
+            const label = payload.name || payload.playerId || 'A player';
+            if (window.Game.UI && window.Game.UI.Screens) {
+                window.Game.UI.Screens.showNotification(`${label} auto-completed due to disconnect timeout.`, 'info');
+            }
+        });
+
+        mpClient.on('campaign_barrier_complete', (payload = {}) => {
+            ensureState();
+            this.state.multiplayer.barrierComplete = true;
+            this.state.multiplayer.waitingForOthers = false;
+            this.state.multiplayer.electionSeed = payload.electionSeed || null;
+            window.Game.UI.Screens.showNotification('All players finished 8/8. Election begins.', 'success');
+
+            if (this.currentState === this.STATES.STATE_CAMPAIGN) {
+                this.transition(this.STATES.STATE_ELECTION_CALC);
+            }
+        });
+
+        mpClient.on('election_started', (payload = {}) => {
+            ensureState();
+            this.state.multiplayer.barrierComplete = true;
+            this.state.multiplayer.waitingForOthers = false;
+            this.state.multiplayer.electionSeed = payload.electionSeed || this.state.multiplayer.electionSeed || null;
+            if (this.currentState === this.STATES.STATE_CAMPAIGN) {
+                this.transition(this.STATES.STATE_ELECTION_CALC);
+            }
+        });
+
+        mpClient.on('action_applied', (payload = {}) => {
+            ensureState();
+            const actionType = payload.actionType || 'action';
+            const order = Number(payload.order || 0);
+            this.state.multiplayer.lastOrder = order;
+            this.logRunEvent('multiplayer', `Order #${order}: ${actionType}`, {
+                order,
+                actionType,
+                turningPointScore: 0.2
+            });
+        });
+
+        mpClient.on('error', (payload = {}) => {
+            const message = payload.message || 'Multiplayer server error.';
+            if (window.Game.UI && window.Game.UI.Screens) {
+                window.Game.UI.Screens.showNotification(message, 'error');
+            }
+        });
+
+        this._multiplayerBridgeBound = true;
+    },
+
+    _applyMultiplayerRoomSnapshot(payload = {}) {
+        const room = payload.room || payload;
+        if (!room || typeof room !== 'object') return;
+
+        const mp = this.state.multiplayer;
+        mp.enabled = true;
+        mp.roomId = room.id || mp.roomId;
+        mp.roomState = room.state || mp.roomState;
+        mp.campaignRequiredTurns = Number(room.campaignRequiredTurns || mp.campaignRequiredTurns || 8);
+        mp.players = Array.isArray(room.players) ? room.players.map(p => ({ ...p })) : mp.players;
+        mp.lastUpdatedAt = Date.now();
+
+        if (payload.self && payload.self.playerId) {
+            mp.playerId = payload.self.playerId;
+            mp.seat = payload.self.seat || mp.seat;
+        }
+
+        this._updateMultiplayerCampaignProgress(mp.players.map(p => ({
+            playerId: p.playerId,
+            name: p.name,
+            seat: p.seat,
+            turnsCompleted: p.turnsCompleted || 0,
+            completed: !!p.campaignComplete
+        })));
+    },
+
+    _updateMultiplayerCampaignProgress(progressList = []) {
+        const mp = this.state.multiplayer;
+        const map = {};
+        let myTurns = mp.myTurnsCompleted || 0;
+        let allDone = progressList.length > 0;
+
+        for (const row of progressList) {
+            const turns = Number(row.turnsCompleted || 0);
+            const completed = !!row.completed;
+            map[row.playerId] = {
+                name: row.name || row.playerId,
+                seat: row.seat || null,
+                turnsCompleted: turns,
+                completed
+            };
+
+            if (row.playerId === mp.playerId) {
+                myTurns = turns;
+            }
+
+            if (!completed) allDone = false;
+        }
+
+        mp.progressByPlayerId = map;
+        mp.myTurnsCompleted = myTurns;
+        mp.waitingForOthers = myTurns >= mp.campaignRequiredTurns && !allDone;
+        mp.barrierComplete = allDone;
+        mp.lastUpdatedAt = Date.now();
+    },
+
+    isMultiplayerActive() {
+        return !!(this.state && this.state.multiplayer && this.state.multiplayer.enabled);
+    },
+
+    getMultiplayerCampaignTurnTarget() {
+        if (!this.isMultiplayerActive()) return null;
+        const target = Number(this.state.multiplayer.campaignRequiredTurns || 8);
+        return Number.isFinite(target) && target > 0 ? target : 8;
+    },
+
     _ensureStateDefaults(state) {
         if (!state) return;
+        this._ensureMultiplayerStateShape(state);
         if (!Array.isArray(state.runHistory)) state.runHistory = [];
         if (!state.aiPersonality) state.aiPersonality = {};
         if (!state.aiAllianceMemory) state.aiAllianceMemory = {};
@@ -759,6 +1011,9 @@ window.Game.App = {
             return { success: false, msg: 'Invalid save slot.' };
         }
         if (!this.state) return { success: false, msg: 'Game state not initialized.' };
+        if (this.isMultiplayerActive()) {
+            return { success: false, msg: 'Save is disabled during multiplayer session.' };
+        }
 
         const playerParty = (this.state.parties || []).find(p => p.id === this.state.playerPartyId);
         const payload = {
@@ -1353,19 +1608,48 @@ window.Game.App = {
 
     // ─── CAMPAIGN TURN LOGIC ─────────────────────────────────
     endCampaignTurn() {
+        const multiplayerActive = this.isMultiplayerActive();
+        const turnTarget = multiplayerActive
+            ? this.getMultiplayerCampaignTurnTarget()
+            : window.Game.Engine.Campaign.getMaxCampaignTurns(this.state);
+
+        if (multiplayerActive && this.state.multiplayer.waitingForOthers) {
+            window.Game.UI.Screens.showNotification('You already finished 8/8. Waiting for other players.', 'info');
+            return;
+        }
+
         // AI campaigns
         window.Game.Engine.Campaign.runAICampaign(this.state, this.state.campaignTurn);
         this._maybeSpawnCampaignPartyEvent();
 
         this.logRunEvent('campaign', `Week ${this.state.campaignTurn} ended.`);
 
-        this.state.campaignTurn++;
-        this.state.actionPoints = window.Game.Engine.Campaign.getAPPerTurn(this.state);
+        const completedTurns = Math.min(turnTarget, this.state.campaignTurn);
 
-        if (this.state.campaignTurn > window.Game.Engine.Campaign.getMaxCampaignTurns(this.state)) {
+        if (multiplayerActive && window.Game.Multiplayer) {
+            window.Game.Multiplayer.reportCampaignTurn(completedTurns);
+            this.state.multiplayer.myTurnsCompleted = Math.max(this.state.multiplayer.myTurnsCompleted || 0, completedTurns);
+        }
+
+        if (this.state.campaignTurn >= turnTarget) {
+            if (multiplayerActive) {
+                this.state.actionPoints = 0;
+                this.state.pendingCampaignEvent = null;
+                this.state.multiplayer.waitingForOthers = true;
+                this.logRunEvent('multiplayer', `Campaign completed ${completedTurns}/${turnTarget}. Waiting for others.`, {
+                    turnsCompleted: completedTurns,
+                    turningPointScore: 1
+                });
+                window.Game.UI.Screens.showNotification(`Finished ${turnTarget}/${turnTarget}. Waiting for other players.`, 'info');
+                window.Game.UI.Screens.renderCampaign(this.state);
+                return;
+            }
+
             // Election!
             this.transition('STATE_ELECTION_CALC');
         } else {
+            this.state.campaignTurn++;
+            this.state.actionPoints = window.Game.Engine.Campaign.getAPPerTurn(this.state);
             this.state.pendingCampaignEvent = window.Game.Engine.Campaign.generateWeeklyEvent(this.state);
             window.Game.UI.Screens.renderCampaign(this.state);
         }

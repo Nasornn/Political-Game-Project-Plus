@@ -430,6 +430,8 @@ window.Game.UI.Screens = {
     _parliamentSwipeHandlers: null,
     _responsiveWatcherBound: false,
     _responsiveWatcher: null,
+    _multiplayerConnectPending: false,
+    _multiplayerNameSeed: 'Player',
 
     _setMetaToolbarButtonState(buttonId, enabled, lockedReason, hideWhenDisabled = false) {
         const btn = document.getElementById(buttonId);
@@ -451,14 +453,25 @@ window.Game.UI.Screens = {
         }
     },
 
+    _isMultiplayerSessionActive() {
+        const app = window.Game && window.Game.App;
+        return !!(app && app.state && app.state.multiplayer && app.state.multiplayer.enabled);
+    },
+
     _updateMetaToolbarAvailability(screenId = this.currentScreen) {
         const isSessionScreen = !!screenId && screenId !== 'screen-setup' && screenId !== 'screen-menu';
         const setupOnlyToolsEnabled = !isSessionScreen;
+        const multiplayerActive = this._isMultiplayerSessionActive();
 
-        this._setMetaToolbarButtonState('btn-open-save-load', true);
+        const saveEnabled = !multiplayerActive;
+        const sandboxEnabled = setupOnlyToolsEnabled && !multiplayerActive;
+        const scenarioEnabled = setupOnlyToolsEnabled && !multiplayerActive;
+
+        this._setMetaToolbarButtonState('btn-open-save-load', saveEnabled, 'Save/Load is disabled during multiplayer.');
         this._setMetaToolbarButtonState('btn-open-history', setupOnlyToolsEnabled, 'Run History is available in Setup only.', true);
-        this._setMetaToolbarButtonState('btn-open-sandbox', setupOnlyToolsEnabled, 'Sandbox is available in Setup only.', true);
-        this._setMetaToolbarButtonState('btn-open-scenario', setupOnlyToolsEnabled, 'Scenario Mod is available in Setup only.', true);
+        this._setMetaToolbarButtonState('btn-open-sandbox', sandboxEnabled, multiplayerActive ? 'Sandbox is disabled during multiplayer.' : 'Sandbox is available in Setup only.', true);
+        this._setMetaToolbarButtonState('btn-open-scenario', scenarioEnabled, multiplayerActive ? 'Scenario Mod is disabled during multiplayer.' : 'Scenario Mod is available in Setup only.', true);
+        this._setMetaToolbarButtonState('btn-open-multiplayer', true);
     },
 
     _getSetupThemeVariants() {
@@ -1313,6 +1326,7 @@ window.Game.UI.Screens = {
         const btnHistory = document.getElementById('btn-open-history');
         const btnSandbox = document.getElementById('btn-open-sandbox');
         const btnScenario = document.getElementById('btn-open-scenario');
+        const btnMultiplayer = document.getElementById('btn-open-multiplayer');
 
         if (btnSaveLoad) {
             btnSaveLoad.addEventListener('click', () => this.renderSaveLoadModal());
@@ -1326,14 +1340,190 @@ window.Game.UI.Screens = {
         if (btnScenario) {
             btnScenario.addEventListener('click', () => this.renderCustomScenarioModal());
         }
+        if (btnMultiplayer) {
+            btnMultiplayer.addEventListener('click', () => this.renderMultiplayerModal());
+        }
         this._updateMetaToolbarAvailability(this.currentScreen || 'screen-menu');
         this._metaToolbarBound = true;
+    },
+
+    _getMultiplayerState() {
+        const app = window.Game && window.Game.App;
+        if (!app || !app.state) return null;
+        return app.state.multiplayer || null;
+    },
+
+    _getMultiplayerStatusLabel(mpState) {
+        if (!mpState) return 'Offline';
+        if (mpState.status === 'connected' && mpState.roomId) {
+            return `Connected · Room ${mpState.roomId}`;
+        }
+        if (mpState.status === 'connected') return 'Connected';
+        if (mpState.status === 'disconnected') return 'Disconnected';
+        return 'Offline';
+    },
+
+    async renderMultiplayerModal() {
+        const modal = document.getElementById('modal');
+        if (!modal) return;
+
+        const app = window.Game.App;
+        const mpClient = window.Game.Multiplayer;
+        const mpState = this._getMultiplayerState() || {};
+        const roomPlayers = Array.isArray(mpState.players) ? mpState.players : [];
+        const inRoom = !!mpState.roomId;
+        const me = roomPlayers.find(p => p.playerId === mpState.playerId);
+        const meReady = !!(me && me.ready);
+
+        modal.innerHTML = `
+            <div class="modal-content" style="max-width:760px;">
+                <div class="modal-header">
+                    <h3>🌐 Multiplayer Session</h3>
+                    <button class="modal-close" id="modal-close">✕</button>
+                </div>
+
+                <div class="run-summary-grid" style="margin-bottom:10px;">
+                    <div class="info-chip"><span class="info-label">Status</span><span class="info-value" style="font-size:0.94rem;">${this._getMultiplayerStatusLabel(mpState)}</span></div>
+                    <div class="info-chip"><span class="info-label">Seat</span><span class="info-value" style="font-size:0.94rem;">${mpState.seat || '-'}</span></div>
+                    <div class="info-chip"><span class="info-label">Room State</span><span class="info-value" style="font-size:0.94rem;">${mpState.roomState || '-'}</span></div>
+                    <div class="info-chip"><span class="info-label">Turns</span><span class="info-value" style="font-size:0.94rem;">${mpState.myTurnsCompleted || 0}/${mpState.campaignRequiredTurns || 8}</span></div>
+                </div>
+
+                <div class="setup-scenario-panel" style="margin-bottom:10px;">
+                    <div class="setup-scenario-title">Quick Steps</div>
+                    <p class="setup-scenario-desc" style="margin-bottom:8px;">
+                        1) Connect to server, 2) Host room or Join room code, 3) All players Set Ready, 4) Play 8 turns each, election starts automatically.
+                    </p>
+                    <div style="display:grid;grid-template-columns:1fr auto;gap:8px;align-items:center;">
+                        <div class="form-input" style="display:flex;align-items:center;">Room Code: <strong style="margin-left:6px;">${mpState.roomId || '—'}</strong></div>
+                        <button class="btn-small" id="btn-mp-copy-room" style="margin:0;text-align:center;" ${inRoom ? '' : 'disabled'}>Copy Code</button>
+                    </div>
+                </div>
+
+                <div class="setup-scenario-panel" style="margin-bottom:10px;">
+                    <div class="setup-scenario-title">Connection</div>
+                    <div style="display:grid;grid-template-columns:1fr auto;gap:8px;">
+                        <input id="mp-endpoint" class="form-input" value="${(mpState.endpoint || (mpClient && mpClient.endpoint) || 'ws://localhost:8787').replace(/"/g, '&quot;')}" placeholder="ws://localhost:8787">
+                        <button class="btn-small" id="btn-mp-connect" style="margin:0;text-align:center;">Connect</button>
+                    </div>
+                </div>
+
+                <div class="setup-scenario-panel" style="margin-bottom:10px;">
+                    <div class="setup-scenario-title">Lobby Actions</div>
+                    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px;">
+                        <input id="mp-player-name" class="form-input" value="${(mpState.playerName || this._multiplayerNameSeed || 'Player').replace(/"/g, '&quot;')}" placeholder="Player name">
+                        <input id="mp-room-id" class="form-input" value="" placeholder="Room code (e.g. AB12CD)">
+                    </div>
+                    <div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;">
+                        <button class="btn-small" id="btn-mp-host" style="margin:0;text-align:center;" ${inRoom ? 'disabled' : ''}>Host Room</button>
+                        <button class="btn-small" id="btn-mp-join" style="margin:0;text-align:center;" ${inRoom ? 'disabled' : ''}>Join Room</button>
+                        <button class="btn-small" id="btn-mp-match" style="margin:0;text-align:center;" ${inRoom ? 'disabled' : ''}>Matchmaking</button>
+                    </div>
+                    <div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:8px;">
+                        <button class="btn-small" id="btn-mp-ready" style="margin:0;text-align:center;" ${inRoom ? '' : 'disabled'}>${meReady ? 'Set Unready' : 'Set Ready'}</button>
+                        <button class="btn-small" id="btn-mp-leave" style="margin:0;text-align:center;" ${inRoom ? '' : 'disabled'}>Leave Room</button>
+                    </div>
+                </div>
+
+                <div class="setup-scenario-panel" style="margin-bottom:0;">
+                    <div class="setup-scenario-title">Players</div>
+                    <div class="mp-list" style="max-height:220px;">
+                        ${roomPlayers.length === 0
+                            ? '<p class="placeholder-text" style="padding:12px;">Not in a room yet.</p>'
+                            : roomPlayers.map(p => `
+                                <div class="mp-pick-card" style="cursor:default;">
+                                    <span class="mp-name">Seat ${p.seat}: ${p.name}${p.playerId === mpState.playerId ? ' (You)' : ''}</span>
+                                    <span class="mp-loyalty">${p.ready ? 'Ready' : 'Not Ready'}</span>
+                                    <span class="mp-corruption">${p.turnsCompleted || 0}/${mpState.campaignRequiredTurns || 8}</span>
+                                </div>
+                            `).join('')
+                        }
+                    </div>
+                </div>
+            </div>
+        `;
+        modal.classList.remove('hidden');
+
+        document.getElementById('modal-close').addEventListener('click', () => modal.classList.add('hidden'));
+
+        const copyBtn = document.getElementById('btn-mp-copy-room');
+        if (copyBtn) {
+            copyBtn.addEventListener('click', async () => {
+                if (!mpState.roomId) return;
+                try {
+                    await navigator.clipboard.writeText(mpState.roomId);
+                    this.showNotification('Room code copied.', 'success');
+                } catch (_) {
+                    this.showNotification(`Room code: ${mpState.roomId}`, 'info');
+                }
+            });
+        }
+
+        const getName = () => {
+            const raw = document.getElementById('mp-player-name').value.trim();
+            const name = raw || 'Player';
+            this._multiplayerNameSeed = name;
+            if (app && app.state && app.state.multiplayer) {
+                app.state.multiplayer.playerName = name;
+            }
+            return name;
+        };
+
+        document.getElementById('btn-mp-connect').addEventListener('click', async () => {
+            if (this._multiplayerConnectPending) return;
+            this._multiplayerConnectPending = true;
+            const endpoint = document.getElementById('mp-endpoint').value.trim();
+            if (endpoint) mpClient.setEndpoint(endpoint);
+            const result = await mpClient.connect();
+            this._multiplayerConnectPending = false;
+            this.showNotification(result.msg, result.success ? 'success' : 'error');
+            if (!modal.classList.contains('hidden')) this.renderMultiplayerModal();
+        });
+
+        document.getElementById('btn-mp-host').addEventListener('click', async () => {
+            const result = await mpClient.createRoom({ name: getName(), maxPlayers: 4 });
+            this.showNotification(result.msg, result.success ? 'success' : 'error');
+        });
+
+        document.getElementById('btn-mp-join').addEventListener('click', async () => {
+            const roomId = document.getElementById('mp-room-id').value.trim().toUpperCase();
+            if (!roomId) {
+                this.showNotification('Enter a room code first.', 'error');
+                return;
+            }
+            const result = await mpClient.joinRoom({ roomId, name: getName() });
+            this.showNotification(result.msg, result.success ? 'success' : 'error');
+        });
+
+        document.getElementById('btn-mp-match').addEventListener('click', async () => {
+            const result = await mpClient.joinMatchmaking({ name: getName() });
+            this.showNotification(result.msg, result.success ? 'success' : 'error');
+        });
+
+        document.getElementById('btn-mp-ready').addEventListener('click', () => {
+            const me = roomPlayers.find(p => p.playerId === mpState.playerId);
+            const next = !(me && me.ready);
+            mpClient.setReady(next);
+            this.showNotification(next ? 'Ready signal sent.' : 'Unready signal sent.', 'info');
+        });
+
+        document.getElementById('btn-mp-leave').addEventListener('click', () => {
+            mpClient.leaveRoom();
+            this.showNotification('Left room.', 'info');
+            setTimeout(() => {
+                if (!modal.classList.contains('hidden')) this.renderMultiplayerModal();
+            }, 80);
+        });
     },
 
     renderSaveLoadModal() {
         const modal = document.getElementById('modal');
         if (!modal) return;
         const app = window.Game.App;
+        if (app && app.isMultiplayerActive && app.isMultiplayerActive()) {
+            this.showNotification('Save/Load is disabled during multiplayer session.', 'error');
+            return;
+        }
         const slots = app.getSaveSlots();
 
         modal.innerHTML = `
@@ -1405,7 +1595,7 @@ window.Game.UI.Screens = {
         if (!modal) return;
         const filterType = this._runHistoryFilter || 'all';
         const analytics = window.Game.App.getRunHistoryAnalytics(filterType);
-        const filterButtons = ['all', 'campaign', 'campaign-event', 'coalition', 'parliament', 'election', 'crisis', 'scenario', 'sandbox', 'save', 'load'];
+        const filterButtons = ['all', 'campaign', 'campaign-event', 'coalition', 'parliament', 'election', 'crisis', 'multiplayer', 'scenario', 'sandbox', 'save', 'load'];
 
         modal.innerHTML = `
             <div class="modal-content run-history-modal" style="max-width:860px;">
@@ -1848,6 +2038,55 @@ window.Game.UI.Screens = {
         markSetupCard(difficultyPanel);
         grid.appendChild(difficultyPanel);
 
+        const multiplayerState = gameState.multiplayer || null;
+        const multiplayerPlayers = (multiplayerState && Array.isArray(multiplayerState.players)) ? multiplayerState.players : [];
+        const multiplayerPanel = document.createElement('div');
+        multiplayerPanel.className = 'setup-scenario-panel setup-mode-panel';
+        multiplayerPanel.innerHTML = `
+            <div class="setup-scenario-title">Multiplayer (8-Turn Barrier)</div>
+            <div class="setup-scenario-desc" style="margin-bottom:8px;">
+                Free-for-all for 3-4 players. Each player finishes 8 campaign turns independently; election starts when all reach 8/8.
+            </div>
+            <div class="setup-scenario-actions" style="grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;">
+                <button class="setup-scenario-btn" id="btn-open-mp-session">
+                    <span class="setup-scenario-btn-label">Open Multiplayer Panel</span>
+                    <span class="setup-scenario-btn-meta">Host, join room code, or matchmaking</span>
+                </button>
+                <button class="setup-scenario-btn" id="btn-refresh-mp-setup">
+                    <span class="setup-scenario-btn-label">Refresh Status</span>
+                    <span class="setup-scenario-btn-meta">Update room and player state</span>
+                </button>
+            </div>
+            <div class="setup-scenario-desc" style="margin-top:10px;">
+                Status: <strong>${this._getMultiplayerStatusLabel(multiplayerState)}</strong>
+                ${multiplayerState && multiplayerState.roomId ? `• Room ${multiplayerState.roomId}` : ''}
+                ${multiplayerState && multiplayerState.seat ? `• Seat ${multiplayerState.seat}` : ''}
+            </div>
+            ${multiplayerPlayers.length > 0 ? `
+                <div class="mp-list" style="max-height:140px;margin-top:8px;">
+                    ${multiplayerPlayers.map(p => `
+                        <div class="mp-pick-card" style="cursor:default;">
+                            <span class="mp-name">Seat ${p.seat}: ${p.name}${(multiplayerState && p.playerId === multiplayerState.playerId) ? ' (You)' : ''}</span>
+                            <span class="mp-loyalty">${p.ready ? 'Ready' : 'Not Ready'}</span>
+                            <span class="mp-corruption">${p.turnsCompleted || 0}/${(multiplayerState && multiplayerState.campaignRequiredTurns) || 8}</span>
+                        </div>
+                    `).join('')}
+                </div>
+            ` : ''}
+        `;
+        markSetupCard(multiplayerPanel);
+        grid.appendChild(multiplayerPanel);
+
+        const openMpBtn = multiplayerPanel.querySelector('#btn-open-mp-session');
+        if (openMpBtn) {
+            openMpBtn.addEventListener('click', () => this.renderMultiplayerModal());
+        }
+
+        const refreshMpBtn = multiplayerPanel.querySelector('#btn-refresh-mp-setup');
+        if (refreshMpBtn) {
+            refreshMpBtn.addEventListener('click', () => this.renderSetup(gameState));
+        }
+
         // Add "Create Custom Party" card at top
         const createCard = document.createElement('div');
         createCard.className = 'party-card party-card-create';
@@ -2209,10 +2448,18 @@ window.Game.UI.Screens = {
         if (!sidebar) return;
 
         const playerParty = gameState.parties.find(p => p.id === gameState.playerPartyId);
-        const maxTurns = window.Game.Engine.Campaign.getMaxCampaignTurns(gameState);
+        const app = window.Game.App;
+        const multiplayerActive = !!(app && app.isMultiplayerActive && app.isMultiplayerActive());
+        const multiplayerState = gameState.multiplayer || {};
+        const maxTurns = multiplayerActive
+            ? (app.getMultiplayerCampaignTurnTarget ? app.getMultiplayerCampaignTurnTarget() : (multiplayerState.campaignRequiredTurns || 8))
+            : window.Game.Engine.Campaign.getMaxCampaignTurns(gameState);
         const apPerTurn = window.Game.Engine.Campaign.getAPPerTurn(gameState);
         const momentum = (gameState.campaignMomentum && gameState.campaignMomentum[gameState.playerPartyId]) || 0;
         const momentumColor = momentum > 0 ? 'var(--success)' : (momentum < 0 ? 'var(--crimson)' : 'var(--text-secondary)');
+        const waitingForOthers = !!(multiplayerActive && multiplayerState.waitingForOthers);
+        const myProgress = Number(multiplayerState.myTurnsCompleted || 0);
+        const progressRows = Object.entries(multiplayerState.progressByPlayerId || {});
 
         sidebar.innerHTML = `
             <div class="campaign-header">
@@ -2236,14 +2483,31 @@ window.Game.UI.Screens = {
                         <span style="color:${playerParty.hexColor}">${playerParty.thaiName}</span>
                         <span>Capital: ${playerParty.politicalCapital} | Grey: ${playerParty.greyMoney}</span>
                     </div>
+                    ${multiplayerActive ? `
+                        <div class="campaign-notification-slot" style="margin-bottom:8px;">
+                            <div class="campaign-notification-title">Multiplayer Progress</div>
+                            <div class="campaign-notification-content notif-info" style="display:block;">
+                                <div>You: ${myProgress}/${maxTurns}</div>
+                                <div style="margin-top:6px;display:grid;gap:4px;">
+                                    ${progressRows.length === 0
+                                        ? '<span style="font-size:0.75rem;color:var(--text-dim);">Waiting for room updates...</span>'
+                                        : progressRows.map(([pid, row]) => `<span style="font-size:0.74rem;">Seat ${row.seat || '-'} · ${row.name}${pid === multiplayerState.playerId ? ' (You)' : ''}: ${row.turnsCompleted}/${maxTurns}${row.completed ? ' ✓' : ''}</span>`).join('')
+                                    }
+                                </div>
+                            </div>
+                        </div>
+                    ` : ''}
                     <div class="campaign-notification-slot" id="campaign-notification-slot">
                         <div class="campaign-notification-title">Notification Bar</div>
                         <div class="campaign-notification-content">No notifications yet.</div>
                     </div>
                 </div>
                 ${gameState.pendingCampaignEvent ? '<p class="campaign-event-hint">Weekly event pending: choose a response to continue.</p>' : ''}
-                <button class="btn-primary btn-end-turn" id="btn-end-campaign-turn">
-                    ${gameState.campaignTurn >= maxTurns ? '🗳️ Hold Election' : '➡️ End Week'}
+                ${waitingForOthers ? '<p class="campaign-event-hint">You completed 8/8 turns. Waiting for all players to finish.</p>' : ''}
+                <button class="btn-primary btn-end-turn" id="btn-end-campaign-turn" ${waitingForOthers ? 'disabled' : ''}>
+                    ${multiplayerActive
+                        ? (gameState.campaignTurn >= maxTurns ? '⏳ Finish & Wait' : '➡️ End Week (Sync)')
+                        : (gameState.campaignTurn >= maxTurns ? '🗳️ Hold Election' : '➡️ End Week')}
                 </button>
             </div>
             <div class="action-cards" id="action-cards"></div>
@@ -2265,6 +2529,10 @@ window.Game.UI.Screens = {
 
         // Province click handler for campaign
         this.onProvinceClick = (provinceName) => {
+            if (waitingForOthers) {
+                this.showNotification('You already completed 8/8 turns. Waiting for other players.', 'info');
+                return;
+            }
             this._showCampaignProvinceMenu(provinceName, gameState);
         };
 
@@ -2322,11 +2590,13 @@ window.Game.UI.Screens = {
         container.innerHTML = '';
 
         const playerParty = gameState.parties.find(p => p.id === gameState.playerPartyId);
+        const app = window.Game.App;
+        const multiplayerLocked = !!(app && app.isMultiplayerActive && app.isMultiplayerActive() && gameState.multiplayer && gameState.multiplayer.waitingForOthers);
 
         for (const [key, action] of Object.entries(window.Game.Engine.Campaign.ACTIONS)) {
             const canAfford = gameState.actionPoints >= action.apCost;
             const hasGreyMoney = !action.requiresGreyMoney || playerParty.greyMoney >= action.requiresGreyMoney;
-            const disabled = !canAfford || !hasGreyMoney;
+            const disabled = multiplayerLocked || !canAfford || !hasGreyMoney;
 
             const card = document.createElement('div');
             card.className = `action-card ${disabled ? 'disabled' : ''}`;
@@ -2352,9 +2622,22 @@ window.Game.UI.Screens = {
     },
 
     _showCampaignProvinceMenu(provinceName, gameState) {
+        const app = window.Game.App;
+        const multiplayerLocked = !!(app && app.isMultiplayerActive && app.isMultiplayerActive() && gameState.multiplayer && gameState.multiplayer.waitingForOthers);
+        if (multiplayerLocked) {
+            this.showNotification('You already completed 8/8 turns. Waiting for other players.', 'info');
+            return;
+        }
+
         const seats = window.Game.Data.PROVINCES[provinceName] || 0;
         const region = window.Game.Data.PROVINCE_REGION[provinceName] || 'Unknown';
         const playerParty = gameState.parties.find(p => p.id === gameState.playerPartyId);
+        const notifyServerAction = (actionKey, payload = {}) => {
+            if (!(app && app.isMultiplayerActive && app.isMultiplayerActive())) return;
+            if (window.Game.Multiplayer) {
+                window.Game.Multiplayer.reportCampaignAction(actionKey, payload);
+            }
+        };
 
         const actionCatalog = window.Game.Engine.Campaign.ACTIONS || {};
         const actionRows = [
@@ -2444,6 +2727,7 @@ window.Game.UI.Screens = {
 
                     const msg = action.execute(gameState, { districtId: targetDistrict.id });
                     gameState.actionPoints -= action.apCost;
+                    notifyServerAction(actionKey, { provinceName, districtId: targetDistrict.id });
                     this.showNotification(`${msg} (${provinceName} seat ${targetDistrict.seatIndex})`, 'success');
                     modal.classList.add('hidden');
                     this.renderCampaign(gameState);
@@ -2455,6 +2739,7 @@ window.Game.UI.Screens = {
                     this._showTargetPartyPicker(gameState, (targetPartyId) => {
                         const msg = action.execute(gameState, { provinceName, targetPartyId });
                         gameState.actionPoints -= action.apCost;
+                        notifyServerAction(actionKey, { provinceName, targetPartyId });
                         this.showNotification(msg, 'success');
                         modal.classList.add('hidden');
                         this.renderCampaign(gameState);
@@ -2464,6 +2749,7 @@ window.Game.UI.Screens = {
 
                 const msg = action.execute(gameState, { provinceName });
                 gameState.actionPoints -= action.apCost;
+                notifyServerAction(actionKey, { provinceName });
                 this.showNotification(msg, 'success');
                 modal.classList.add('hidden');
                 this.renderCampaign(gameState);
@@ -2472,12 +2758,22 @@ window.Game.UI.Screens = {
     },
 
     _showActionTargeting(actionKey, action, gameState) {
+        const app = window.Game.App;
+        const multiplayerLocked = !!(app && app.isMultiplayerActive && app.isMultiplayerActive() && gameState.multiplayer && gameState.multiplayer.waitingForOthers);
+        if (multiplayerLocked) {
+            this.showNotification('You already completed 8/8 turns. Waiting for other players.', 'info');
+            return;
+        }
+
         if (['rally', 'canvass', 'attackAd', 'ioOperation', 'buySupport'].includes(actionKey)) {
             this.showNotification("Click a province on the map to target.", 'info');
             window.Game.UI.Map._mapGroup.selectAll('path.province').classed('targetable', true);
         } else if (actionKey === 'fundraise') {
             const msg = action.execute(gameState);
             gameState.actionPoints -= action.apCost;
+            if (app && app.isMultiplayerActive && app.isMultiplayerActive() && window.Game.Multiplayer) {
+                window.Game.Multiplayer.reportCampaignAction(actionKey, {});
+            }
             this.showNotification(msg, 'success');
             this.renderCampaign(gameState);
         } else if (actionKey === 'canvass') {
@@ -2492,6 +2788,7 @@ window.Game.UI.Screens = {
         const promises = window.Game.Data.PROMISE_TEMPLATES;
         const existing = (gameState.campaignPromises || []).map(p => p.promiseId);
         const promiseAction = window.Game.Engine.Campaign.ACTIONS.promisePolicy;
+        const app = window.Game.App;
 
         modal.innerHTML = `
             <div class="modal-content promise-modal">
@@ -2548,6 +2845,9 @@ window.Game.UI.Screens = {
 
                 const msg = action.execute(gameState, { promise });
                 gameState.actionPoints -= action.apCost;
+                if (app && app.isMultiplayerActive && app.isMultiplayerActive() && window.Game.Multiplayer) {
+                    window.Game.Multiplayer.reportCampaignAction('promisePolicy', { promiseId: promise.promiseId });
+                }
                 this.showNotification(msg, 'success');
                 modal.classList.add('hidden');
                 this.renderCampaign(gameState);
