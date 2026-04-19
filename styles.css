@@ -35,6 +35,10 @@
     --shadow-lg: 0 20px 60px rgba(0,0,0,0.5);
     --shadow-md: 0 8px 24px rgba(0,0,0,0.35);
     --glow-gold: 0 0 20px rgba(212,168,67,0.3);
+    --safe-top: env(safe-area-inset-top, 0px);
+    --safe-right: env(safe-area-inset-right, 0px);
+    --safe-bottom: env(safe-area-inset-bottom, 0px);
+    --safe-left: env(safe-area-inset-left, 0px);
 }
 
 html, body {
@@ -93,6 +97,7 @@ body {
 
 .screen {
     min-height: 100vh;
+    min-height: 100dvh;
     animation: fadeIn 0.4s ease-out;
 }
 
@@ -162,6 +167,7 @@ body {
     font-size: 3.5rem;
     font-weight: 700;
     background: linear-gradient(135deg, var(--gold-light), var(--gold), var(--crimson));
+    background-clip: text;
     -webkit-background-clip: text;
     -webkit-text-fill-color: transparent;
     margin-bottom: 0.5rem;
@@ -366,6 +372,7 @@ body {
     font-size: clamp(2rem, 3.6vw, 3rem);
     letter-spacing: 0.3px;
     background: linear-gradient(120deg, var(--setup-title-start) 0%, var(--setup-title-mid) 25%, var(--setup-title-end) 65%, var(--setup-title-tail) 100%);
+    background-clip: text;
     -webkit-background-clip: text;
     -webkit-text-fill-color: transparent;
     margin-bottom: 10px;
@@ -1368,6 +1375,7 @@ path.province.targetable {
     font-family: var(--font-main);
     font-size: 1.8rem;
     background: linear-gradient(135deg, var(--gold-light), var(--gold));
+    background-clip: text;
     -webkit-background-clip: text;
     -webkit-text-fill-color: transparent;
 }
@@ -1696,6 +1704,7 @@ path.province.targetable {
     font-family: var(--font-main);
     font-size: 2rem;
     background: linear-gradient(135deg, var(--gold-light), var(--gold));
+    background-clip: text;
     -webkit-background-clip: text;
     -webkit-text-fill-color: transparent;
     margin-bottom: 6px;
@@ -2693,6 +2702,7 @@ path.province.targetable {
     display: flex;
     align-items: center;
     justify-content: center;
+    padding: max(12px, var(--safe-top)) max(12px, var(--safe-right)) max(12px, var(--safe-bottom)) max(12px, var(--safe-left));
     background: rgba(0,0,0,0.6);
     backdrop-filter: blur(6px);
 }
@@ -2706,6 +2716,10 @@ path.province.targetable {
     padding: 24px;
     max-width: 500px;
     width: 90%;
+    max-height: calc(100dvh - max(24px, var(--safe-top)) - max(24px, var(--safe-bottom)));
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    -webkit-overflow-scrolling: touch;
     box-shadow: var(--shadow-lg);
     animation: slideUp 0.3s ease;
 }
@@ -2729,6 +2743,8 @@ path.province.targetable {
     font-size: 1.2rem;
     cursor: pointer;
     padding: 4px 8px;
+    min-width: 40px;
+    min-height: 40px;
     border-radius: 4px;
     transition: all 0.2s;
 }
@@ -2736,6 +2752,40 @@ path.province.targetable {
 .modal-close:hover {
     background: rgba(255,255,255,0.1);
     color: var(--text-primary);
+}
+
+.save-slot-grid {
+    display: grid;
+    gap: 8px;
+}
+
+.save-slot-actions {
+    display: flex;
+    gap: 6px;
+    min-width: 220px;
+}
+
+.run-summary-grid {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(120px, 1fr));
+    gap: 8px;
+}
+
+.run-filter-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+
+.sandbox-controls {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+}
+
+.candidate-editor-actions {
+    display: flex;
+    gap: 8px;
 }
 
 .scenario-modal {
@@ -3318,6 +3368,7 @@ path.province.targetable {
     font-family: var(--font-main);
     font-size: 3rem;
     background: linear-gradient(135deg, var(--crimson), var(--gold));
+    background-clip: text;
     -webkit-background-clip: text;
     -webkit-text-fill-color: transparent;
     margin-bottom: 16px;
@@ -3766,6 +3817,52 @@ path.province.targetable {
 
 /* ─── RESPONSIVE ───────────────────────────────────────────── */
 @media (max-width: 900px) {
+    #meta-toolbar {
+        top: max(8px, var(--safe-top));
+        left: max(8px, var(--safe-left));
+        right: max(8px, var(--safe-right));
+        width: auto;
+        max-width: calc(100vw - max(16px, var(--safe-left)) - max(16px, var(--safe-right)));
+        flex-wrap: wrap;
+        gap: 6px;
+        padding: 6px;
+    }
+
+    #meta-toolbar .btn-small {
+        width: auto;
+        min-height: 40px;
+        font-size: 0.7rem;
+        padding: 8px 10px;
+        margin-bottom: 0;
+    }
+
+    .btn-primary,
+    .btn-danger,
+    .btn-small,
+    .btn-shadow,
+    .btn-party-pick,
+    .campaign-mobile-toggle,
+    .parliament-mobile-toggle,
+    .province-action-btn,
+    .campaign-event-option,
+    .qt-option-btn,
+    .btn-toggle-coalition {
+        min-height: 44px;
+    }
+
+    #modal {
+        align-items: flex-end;
+        padding: max(8px, var(--safe-top)) max(8px, var(--safe-right)) max(8px, var(--safe-bottom)) max(8px, var(--safe-left));
+    }
+
+    .modal-content {
+        width: min(96vw, 760px);
+        max-width: 96vw;
+        max-height: calc(100dvh - max(16px, var(--safe-top)) - max(16px, var(--safe-bottom)));
+        border-radius: 14px;
+        padding: 14px;
+    }
+
     #screen-campaign {
         display: block;
         position: relative;
@@ -3870,6 +3967,41 @@ path.province.targetable {
     #screen-election {
         grid-template-columns: 1fr;
         grid-template-rows: 50vh 1fr;
+    }
+
+    #screen-coalition {
+        padding: 16px 10px 22px;
+    }
+
+    #coalition-panel {
+        max-width: 100%;
+    }
+
+    .coalition-header h2 {
+        font-size: 1.55rem;
+    }
+
+    .coalition-counter {
+        width: 100%;
+    }
+
+    .coalition-seats {
+        font-size: 2rem;
+    }
+
+    .coalition-party-card {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 8px;
+        padding: 12px;
+    }
+
+    #coalition-panel .coalition-party-card > div:last-child {
+        width: 100%;
+        display: grid !important;
+        grid-template-columns: auto auto 1fr;
+        gap: 6px;
+        align-items: center;
     }
 
     #screen-parliament {
@@ -4511,9 +4643,304 @@ path.province.targetable {
 /* ─── COALITION EVENT MODAL ───────────────────────────────── */
 .coalition-event-modal {
     animation: crisisSlideIn 0.4s ease-out;
+    max-width: 550px;
+}
+
+.coalition-event-options {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.coalition-evt-option {
+    background: var(--bg-card);
+    border: 1px solid var(--border-subtle);
+    border-radius: 10px;
+    padding: 14px;
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.crisis-options {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.crisis-option-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border-subtle);
+    border-radius: 10px;
+    padding: 16px;
+    cursor: pointer;
+    transition: all 0.2s ease;
 }
 
 @media (max-width: 700px) {
+    .modal-content {
+        width: 100%;
+        max-width: 100%;
+        border-radius: 16px 16px 12px 12px;
+        padding-bottom: max(14px, calc(var(--safe-bottom) + 10px));
+    }
+
+    .modal-content .modal-header {
+        position: sticky;
+        top: -14px;
+        z-index: 3;
+        margin: -14px -14px 10px;
+        padding: 12px 14px 10px;
+        border-bottom: 1px solid rgba(255,255,255,0.08);
+        background: linear-gradient(180deg, rgba(13,16,23,0.96), rgba(13,16,23,0.84));
+        backdrop-filter: blur(8px);
+    }
+
+    .save-load-modal,
+    .run-history-modal,
+    .sandbox-modal,
+    .candidate-editor-modal,
+    .mp-picker-modal,
+    .campaign-event-modal,
+    .province-modal,
+    .promise-modal,
+    .scenario-modal {
+        width: min(100%, 96vw) !important;
+    }
+
+    .save-slot-actions {
+        min-width: 0;
+        width: 100%;
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+
+    .save-slot-actions .btn-small {
+        margin: 0;
+        text-align: center;
+    }
+
+    .run-summary-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .sandbox-controls {
+        flex-wrap: wrap;
+    }
+
+    .sandbox-controls label {
+        width: 100%;
+    }
+
+    .sandbox-controls .form-input-short,
+    .sandbox-controls .btn-primary {
+        width: 100%;
+        max-width: 100% !important;
+    }
+
+    .scenario-modal {
+        max-height: calc(100dvh - max(16px, var(--safe-top)) - max(16px, var(--safe-bottom)));
+    }
+
+    .scenario-modal-layout {
+        grid-template-columns: 1fr;
+    }
+
+    .scenario-json-editor {
+        min-height: 250px;
+        max-height: 42dvh;
+    }
+
+    .scenario-pack-list {
+        max-height: 30dvh;
+    }
+
+    .candidate-editor-actions {
+        flex-direction: column;
+    }
+
+    .candidate-editor-actions .btn-primary,
+    .candidate-editor-actions .btn-small {
+        width: 100%;
+        text-align: center;
+    }
+
+    .mp-pick-card {
+        align-items: flex-start;
+        flex-wrap: wrap;
+        gap: 6px 8px;
+        min-height: 44px;
+    }
+
+    .mp-corruption,
+    .mp-loyalty {
+        font-size: 0.72rem;
+    }
+
+    .campaign-info-row {
+        flex-wrap: wrap;
+    }
+
+    .campaign-info-row .info-chip {
+        min-width: calc(50% - 4px);
+    }
+
+    .action-card {
+        align-items: flex-start;
+    }
+
+    .action-name {
+        font-size: 0.84rem;
+    }
+
+    .action-eng {
+        font-size: 0.67rem;
+    }
+
+    .notification {
+        top: max(8px, var(--safe-top));
+        right: max(8px, var(--safe-right));
+        left: max(8px, var(--safe-left));
+        max-width: none;
+        font-size: 0.82rem;
+        padding: 10px 12px;
+    }
+
+    #election-results-panel {
+        padding: 12px 10px 18px;
+    }
+
+    .results-header h2 {
+        font-size: 1.4rem;
+    }
+
+    .results-table-header {
+        display: none;
+    }
+
+    .results-row {
+        grid-template-columns: 1fr auto;
+        grid-template-areas:
+            'party total'
+            'const list';
+        gap: 6px 10px;
+        padding: 10px;
+        border: 1px solid rgba(255,255,255,0.06);
+        border-radius: 10px;
+        margin-bottom: 7px;
+    }
+
+    .results-row > span:nth-child(1) {
+        grid-area: party;
+    }
+
+    .results-row > span:nth-child(2) {
+        grid-area: const;
+        font-size: 0.75rem;
+        color: var(--text-secondary);
+    }
+
+    .results-row > span:nth-child(2)::before {
+        content: 'Constituency: ';
+        color: var(--text-dim);
+    }
+
+    .results-row > span:nth-child(3) {
+        grid-area: list;
+        justify-self: end;
+        font-size: 0.75rem;
+        color: var(--text-secondary);
+    }
+
+    .results-row > span:nth-child(3)::before {
+        content: 'Party List: ';
+        color: var(--text-dim);
+    }
+
+    .results-row > span:nth-child(4) {
+        grid-area: total;
+        align-self: start;
+    }
+
+    .majority-bar {
+        height: 18px;
+    }
+
+    .spotlight-number {
+        font-size: 1.2rem;
+    }
+
+    .parl-year {
+        font-size: 1.08rem;
+    }
+
+    .parl-session {
+        font-size: 0.74rem;
+    }
+
+    .vote-breakdown {
+        flex-wrap: wrap;
+        justify-content: flex-start;
+        gap: 8px 12px;
+    }
+
+    .coalition-live-title-row {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 4px;
+    }
+
+    .tactic-metrics {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 3px;
+    }
+
+    .partner-actions {
+        width: 100%;
+        display: grid !important;
+        grid-template-columns: 1fr 1fr;
+    }
+
+    .partner-actions .btn-small {
+        text-align: center;
+    }
+
+    .cabinet-seatshare-row {
+        grid-template-columns: 1fr auto auto;
+    }
+
+    .nc-scores {
+        flex-wrap: wrap;
+        gap: 8px 14px;
+        font-size: 0.96rem;
+    }
+
+    .coalition-event-modal,
+    .crisis-modal {
+        max-width: min(100%, 96vw) !important;
+    }
+
+    .coalition-evt-option,
+    .crisis-option-card {
+        padding: 12px;
+    }
+
+    .crisis-options {
+        max-height: 48dvh;
+        overflow-y: auto;
+        padding-right: 2px;
+    }
+
+    .sandbox-results-header,
+    .sandbox-results-row {
+        grid-template-columns: 1.2fr 0.8fr 0.8fr 0.6fr 0.6fr 0.6fr;
+        font-size: 0.72rem;
+    }
+
+    .sandbox-results-buckets {
+        line-height: 1.35;
+    }
+
     #screen-setup {
         padding: 22px 12px 26px;
     }
@@ -4571,6 +4998,60 @@ path.province.targetable {
 
     .parliament-mobile-toggle {
         padding: 6px 10px;
+        font-size: 0.7rem;
+    }
+
+    .campaign-info-row .info-chip {
+        min-width: 100%;
+    }
+
+    .campaign-notification-slot {
+        min-height: 74px;
+        padding: 7px 8px 8px;
+    }
+
+    .campaign-notification-content {
+        font-size: 0.78rem;
+    }
+
+    .results-row {
+        grid-template-columns: 1fr;
+        grid-template-areas:
+            'party'
+            'total'
+            'const'
+            'list';
+    }
+
+    .results-row > span:nth-child(4) {
+        justify-self: start;
+    }
+
+    .parl-col {
+        padding: 12px;
+    }
+
+    .coalition-evt-option,
+    .crisis-option-card,
+    .qt-card,
+    .adj-card,
+    .coalition-partner-card {
+        padding: 10px;
+    }
+
+    .sandbox-results-header {
+        display: none;
+    }
+
+    .sandbox-results-row {
+        grid-template-columns: 1fr 1fr;
+        gap: 4px 8px;
+        margin-bottom: 6px;
+        border: 1px solid rgba(255,255,255,0.06);
+        border-radius: 8px;
+    }
+
+    .sandbox-results-row > span {
         font-size: 0.7rem;
     }
 

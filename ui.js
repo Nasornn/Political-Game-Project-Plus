@@ -18,6 +18,24 @@ window.Game.UI.Map = {
     _nameCache: {},         // topoName → resolved name cache
     _hoveredProvince: null, // track currently hovered province
 
+    _isCoarsePointerInput() {
+        return !!(window.matchMedia && (window.matchMedia('(pointer: coarse)').matches || window.matchMedia('(hover: none)').matches));
+    },
+
+    _extractPointerCoordinates(event) {
+        if (!event) return null;
+        if (event.touches && event.touches.length > 0) {
+            return { x: event.touches[0].clientX, y: event.touches[0].clientY };
+        }
+        if (event.changedTouches && event.changedTouches.length > 0) {
+            return { x: event.changedTouches[0].clientX, y: event.changedTouches[0].clientY };
+        }
+        if (Number.isFinite(event.clientX) && Number.isFinite(event.clientY)) {
+            return { x: event.clientX, y: event.clientY };
+        }
+        return null;
+    },
+
     /**
      * Move the map SVG to a different container element.
      */
@@ -27,7 +45,51 @@ window.Game.UI.Map = {
         const mapEl = document.getElementById('map-container');
         if (mapEl && mapEl.parentElement) {
             // Physically move the map container
-            container.appendChild(mapEl);
+            if (container.id === 'screen-campaign') {
+                const sidebar = container.querySelector('#campaign-sidebar');
+                if (sidebar) {
+                    container.insertBefore(mapEl, sidebar);
+                } else {
+                    container.insertBefore(mapEl, container.firstChild);
+                }
+            } else {
+                container.appendChild(mapEl);
+            }
+            requestAnimationFrame(() => this.refreshLayout(containerId));
+        }
+    },
+
+    refreshLayout(containerId = this._currentContainerId) {
+        const container = document.getElementById(containerId || this._currentContainerId || '');
+        if (!container || !this.svg || !this.projection || !this._mapGroup) return;
+
+        const width = Math.max(320, container.clientWidth || 500);
+        const height = Math.max(280, container.clientHeight || 700);
+
+        this._currentContainerId = container.id;
+        this.svg
+            .attr('viewBox', `0 0 ${width} ${height}`)
+            .attr('preserveAspectRatio', 'xMidYMid meet');
+
+        this.svg.select('rect.map-bg')
+            .attr('width', width)
+            .attr('height', height);
+
+        this.projection
+            .center([101.0, 15.0])
+            .scale(width * 2.5)
+            .translate([width / 2, height / 2]);
+
+        this.path = d3.geoPath().projection(this.projection);
+        this._sortedIndices = null;
+
+        this._mapGroup.selectAll('path.province').attr('d', this.path);
+        this._mapGroup.selectAll('text.province-label')
+            .attr('transform', d => `translate(${this.path.centroid(d)})`);
+
+        if (this._zoom && this.svg) {
+            this._zoom.translateExtent([[0, 0], [width, height]]);
+            this.svg.call(this._zoom.transform, d3.zoomIdentity);
         }
     },
 
@@ -48,6 +110,7 @@ window.Game.UI.Map = {
 
         // Background
         this.svg.append('rect')
+            .attr('class', 'map-bg')
             .attr('width', width)
             .attr('height', height)
             .attr('fill', '#0a0e1a');
@@ -100,9 +163,9 @@ window.Game.UI.Map = {
                 .attr('vector-effect', 'non-scaling-stroke')
                 .style('cursor', 'pointer')
                 .style('will-change', 'fill')
-                .on('mouseover', (event, d) => this._onHover(event, d))
-                .on('mousemove', (event) => this._onMove(event))
-                .on('mouseout', (event) => this._onOut(event))
+                .on('pointerenter', (event, d) => this._onHover(event, d))
+                .on('pointermove', (event) => this._onMove(event))
+                .on('pointerleave', (event) => this._onOut(event))
                 .on('click', (event, d) => this._onClick(event, d));
 
             // Draw province labels for large provinces (inside zoom group)
@@ -125,6 +188,8 @@ window.Game.UI.Map = {
                     const seats = window.Game.Data.PROVINCES[name] || 0;
                     return seats > 0 ? seats : '';
                 });
+
+            this.refreshLayout(containerId);
 
         } catch (err) {
             console.error('Failed to load map data:', err);
@@ -151,6 +216,8 @@ window.Game.UI.Map = {
     },
 
     _onHover(event, d) {
+        if (this._isCoarsePointerInput()) return;
+
         const name = this._nameCache[d.properties.NAME_1] || this._resolveProvinceName(d.properties.NAME_1);
         this._hoveredProvince = event.currentTarget;
         const seats = window.Game.Data.PROVINCES[name] || '?';
@@ -190,9 +257,31 @@ window.Game.UI.Map = {
     },
 
     _onMove(event) {
+        if (!this.tooltip || this.tooltip.classed('hidden')) return;
+
+        const point = this._extractPointerCoordinates(event);
+        if (!point) return;
+
+        const node = this.tooltip.node();
+        const tipWidth = node ? (node.offsetWidth || 220) : 220;
+        const tipHeight = node ? (node.offsetHeight || 120) : 120;
+        const viewportWidth = window.innerWidth || 1024;
+        const viewportHeight = window.innerHeight || 768;
+
+        let left = point.x + 15;
+        let top = point.y - 10;
+
+        if ((left + tipWidth + 10) > viewportWidth) {
+            left = Math.max(8, point.x - tipWidth - 15);
+        }
+        if ((top + tipHeight + 10) > viewportHeight) {
+            top = Math.max(8, viewportHeight - tipHeight - 10);
+        }
+        if (top < 8) top = 8;
+
         this.tooltip
-            .style('left', (event.pageX + 15) + 'px')
-            .style('top', (event.pageY - 10) + 'px');
+            .style('left', `${left + window.scrollX}px`)
+            .style('top', `${top + window.scrollY}px`);
     },
 
     _onOut(event) {
@@ -207,6 +296,9 @@ window.Game.UI.Map = {
     },
 
     _onClick(event, d) {
+        if (this._isCoarsePointerInput()) {
+            this.tooltip.classed('hidden', true);
+        }
         const name = this._resolveProvinceName(d.properties.NAME_1);
         if (window.Game.UI.Screens.onProvinceClick) {
             window.Game.UI.Screens.onProvinceClick(name);
@@ -529,6 +621,13 @@ window.Game.UI.Screens = {
             } else if (this.currentScreen === 'screen-parliament') {
                 this._setupParliamentMobileNavigation();
             }
+
+            if (window.Game && window.Game.UI && window.Game.UI.Map && typeof window.Game.UI.Map.refreshLayout === 'function') {
+                const mapEl = document.getElementById('map-container');
+                if (mapEl && mapEl.parentElement && mapEl.parentElement.id) {
+                    window.Game.UI.Map.refreshLayout(mapEl.parentElement.id);
+                }
+            }
         };
         window.addEventListener('resize', this._responsiveWatcher, { passive: true });
         this._responsiveWatcherBound = true;
@@ -569,7 +668,41 @@ window.Game.UI.Screens = {
 
         controls.querySelectorAll('.campaign-mobile-toggle').forEach(btn => {
             btn.classList.toggle('active', btn.dataset.view === safeView);
+            btn.setAttribute('aria-selected', btn.dataset.view === safeView ? 'true' : 'false');
         });
+    },
+
+    _canBeginHorizontalSwipe(event, screenId) {
+        if (!event || !event.touches || event.touches.length !== 1) return false;
+        const touch = event.touches[0];
+        const target = event.target;
+
+        if (!(target instanceof Element)) return true;
+        if (target.closest('#modal:not(.hidden)')) return false;
+        if (target.closest('input, textarea, select, button, a, label')) return false;
+
+        const edgePad = 26;
+        const viewportWidth = window.innerWidth || 360;
+
+        if (screenId === 'screen-campaign') {
+            if (target.closest('#campaign-mobile-controls')) return false;
+            const inMap = target.closest('#map-container');
+            const inSidebar = target.closest('#campaign-sidebar');
+            if (inMap || inSidebar) {
+                return (touch.clientX <= edgePad || touch.clientX >= (viewportWidth - edgePad));
+            }
+        }
+
+        if (screenId === 'screen-parliament') {
+            if (target.closest('#parliament-mobile-controls')) return false;
+            const inMain = target.closest('#parliament-main');
+            const inMapSidebar = target.closest('#parliament-map-sidebar');
+            if (inMain || inMapSidebar) {
+                return (touch.clientX <= edgePad || touch.clientX >= (viewportWidth - edgePad));
+            }
+        }
+
+        return true;
     },
 
     _bindCampaignSwipeNavigation() {
@@ -580,28 +713,49 @@ window.Game.UI.Screens = {
         let startX = 0;
         let startY = 0;
         let startTs = 0;
+        let peakDX = 0;
+        let peakDY = 0;
+        let allowSwipe = false;
 
         const onStart = (event) => {
             if (this.currentScreen !== 'screen-campaign' || !this._isMobileLayout()) return;
-            if (!event.touches || event.touches.length !== 1) return;
+            if (!this._canBeginHorizontalSwipe(event, 'screen-campaign')) {
+                allowSwipe = false;
+                return;
+            }
+
             const t = event.touches[0];
             startX = t.clientX;
             startY = t.clientY;
             startTs = Date.now();
+            peakDX = 0;
+            peakDY = 0;
+            allowSwipe = true;
+        };
+
+        const onMove = (event) => {
+            if (!allowSwipe || !event.touches || event.touches.length !== 1) return;
+            const t = event.touches[0];
+            peakDX = Math.max(peakDX, Math.abs(t.clientX - startX));
+            peakDY = Math.max(peakDY, Math.abs(t.clientY - startY));
         };
 
         const onEnd = (event) => {
             if (this.currentScreen !== 'screen-campaign' || !this._isMobileLayout()) return;
+            if (!allowSwipe) return;
             if (!event.changedTouches || event.changedTouches.length === 0) return;
 
             const t = event.changedTouches[0];
             const dx = t.clientX - startX;
             const dy = t.clientY - startY;
             const dt = Date.now() - startTs;
+            const absDx = Math.max(Math.abs(dx), peakDX);
+            const absDy = Math.max(Math.abs(dy), peakDY);
+            allowSwipe = false;
 
-            if (dt > 520) return;
-            if (Math.abs(dx) < 56) return;
-            if (Math.abs(dx) < (Math.abs(dy) * 1.25)) return;
+            if (dt > 480) return;
+            if (absDx < 72) return;
+            if (absDx < (absDy * 1.6)) return;
 
             if (dx < 0) {
                 this._setCampaignMobileView('sidebar');
@@ -610,10 +764,16 @@ window.Game.UI.Screens = {
             }
         };
 
-        campaignScreen.addEventListener('touchstart', onStart, { passive: true });
-        campaignScreen.addEventListener('touchend', onEnd, { passive: true });
+        const onCancel = () => {
+            allowSwipe = false;
+        };
 
-        this._campaignSwipeHandlers = { onStart, onEnd };
+        campaignScreen.addEventListener('touchstart', onStart, { passive: true });
+        campaignScreen.addEventListener('touchmove', onMove, { passive: true });
+        campaignScreen.addEventListener('touchend', onEnd, { passive: true });
+        campaignScreen.addEventListener('touchcancel', onCancel, { passive: true });
+
+        this._campaignSwipeHandlers = { onStart, onMove, onEnd, onCancel };
         this._campaignSwipeBound = true;
     },
 
@@ -688,28 +848,49 @@ window.Game.UI.Screens = {
         let startX = 0;
         let startY = 0;
         let startTs = 0;
+        let peakDX = 0;
+        let peakDY = 0;
+        let allowSwipe = false;
 
         const onStart = (event) => {
             if (this.currentScreen !== 'screen-parliament' || !this._isMobileLayout()) return;
-            if (!event.touches || event.touches.length !== 1) return;
+            if (!this._canBeginHorizontalSwipe(event, 'screen-parliament')) {
+                allowSwipe = false;
+                return;
+            }
+
             const t = event.touches[0];
             startX = t.clientX;
             startY = t.clientY;
             startTs = Date.now();
+            peakDX = 0;
+            peakDY = 0;
+            allowSwipe = true;
+        };
+
+        const onMove = (event) => {
+            if (!allowSwipe || !event.touches || event.touches.length !== 1) return;
+            const t = event.touches[0];
+            peakDX = Math.max(peakDX, Math.abs(t.clientX - startX));
+            peakDY = Math.max(peakDY, Math.abs(t.clientY - startY));
         };
 
         const onEnd = (event) => {
             if (this.currentScreen !== 'screen-parliament' || !this._isMobileLayout()) return;
+            if (!allowSwipe) return;
             if (!event.changedTouches || event.changedTouches.length === 0) return;
 
             const t = event.changedTouches[0];
             const dx = t.clientX - startX;
             const dy = t.clientY - startY;
             const dt = Date.now() - startTs;
+            const absDx = Math.max(Math.abs(dx), peakDX);
+            const absDy = Math.max(Math.abs(dy), peakDY);
+            allowSwipe = false;
 
-            if (dt > 520) return;
-            if (Math.abs(dx) < 56) return;
-            if (Math.abs(dx) < (Math.abs(dy) * 1.25)) return;
+            if (dt > 480) return;
+            if (absDx < 72) return;
+            if (absDx < (absDy * 1.6)) return;
 
             if (dx < 0) {
                 this._setParliamentMobileView('map');
@@ -718,10 +899,16 @@ window.Game.UI.Screens = {
             }
         };
 
-        parliamentScreen.addEventListener('touchstart', onStart, { passive: true });
-        parliamentScreen.addEventListener('touchend', onEnd, { passive: true });
+        const onCancel = () => {
+            allowSwipe = false;
+        };
 
-        this._parliamentSwipeHandlers = { onStart, onEnd };
+        parliamentScreen.addEventListener('touchstart', onStart, { passive: true });
+        parliamentScreen.addEventListener('touchmove', onMove, { passive: true });
+        parliamentScreen.addEventListener('touchend', onEnd, { passive: true });
+        parliamentScreen.addEventListener('touchcancel', onCancel, { passive: true });
+
+        this._parliamentSwipeHandlers = { onStart, onMove, onEnd, onCancel };
         this._parliamentSwipeBound = true;
     },
 
@@ -1150,18 +1337,18 @@ window.Game.UI.Screens = {
         const slots = app.getSaveSlots();
 
         modal.innerHTML = `
-            <div class="modal-content" style="max-width:700px;">
+            <div class="modal-content save-load-modal" style="max-width:700px;">
                 <div class="modal-header">
                     <h3>💾 Save / Load</h3>
                     <button class="modal-close" id="modal-close">✕</button>
                 </div>
-                <div class="save-slot-grid" style="display:grid;gap:8px;">
+                <div class="save-slot-grid">
                     ${slots.map(slot => {
                         const savedAt = slot.savedAt ? new Date(slot.savedAt).toLocaleString() : '-';
                         const meta = slot.meta || {};
                         return `
                             <div class="coalition-party-card" style="border-left-color:var(--gold);">
-                                <div>
+                                <div class="save-slot-meta">
                                     <div class="cp-name">Slot ${slot.slot}</div>
                                     ${slot.empty ? '<div class="cp-you">Empty</div>' : `
                                         <div class="cp-you">${meta.partyName || 'Unknown Party'} • ${meta.electionCount || 1} election(s)</div>
@@ -1169,7 +1356,7 @@ window.Game.UI.Screens = {
                                         <div style="font-size:0.72rem;color:var(--text-dim);">State: ${slot.currentState || 'Unknown'} • Year ${meta.parliamentYear || 1}</div>
                                     `}
                                 </div>
-                                <div style="display:flex;gap:6px;min-width:220px;">
+                                <div class="save-slot-actions">
                                     <button class="btn-small btn-save-slot" data-slot="${slot.slot}" style="margin:0;text-align:center;">Save</button>
                                     <button class="btn-small btn-load-slot" data-slot="${slot.slot}" style="margin:0;text-align:center;" ${slot.empty ? 'disabled' : ''}>Load</button>
                                     <button class="btn-small btn-delete-slot" data-slot="${slot.slot}" style="margin:0;text-align:center;" ${slot.empty ? 'disabled' : ''}>Delete</button>
@@ -1221,23 +1408,23 @@ window.Game.UI.Screens = {
         const filterButtons = ['all', 'campaign', 'campaign-event', 'coalition', 'parliament', 'election', 'crisis', 'scenario', 'sandbox', 'save', 'load'];
 
         modal.innerHTML = `
-            <div class="modal-content" style="max-width:860px;">
+            <div class="modal-content run-history-modal" style="max-width:860px;">
                 <div class="modal-header">
                     <h3>📜 Run History Analytics</h3>
                     <button class="modal-close" id="modal-close">✕</button>
                 </div>
-                <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px;">
+                <div class="run-filter-row" style="margin-bottom:10px;">
                     ${filterButtons.map(type => `
                         <button class="setup-scenario-btn run-filter-btn ${filterType === type ? 'active' : ''}" data-filter="${type}" style="padding:6px 8px;font-size:0.72rem;">${type}</button>
                     `).join('')}
                 </div>
-                <div style="display:grid;grid-template-columns:repeat(4,minmax(120px,1fr));gap:8px;margin-bottom:10px;">
+                <div class="run-summary-grid" style="margin-bottom:10px;">
                     <div class="info-chip"><span class="info-label">Entries</span><span class="info-value" style="font-size:1rem;">${analytics.count}</span></div>
                     <div class="info-chip"><span class="info-label">Popularity Δ</span><span class="info-value" style="font-size:1rem;color:${analytics.popularityDelta >= 0 ? 'var(--success)' : 'var(--crimson)'};">${analytics.popularityDelta > 0 ? '+' : ''}${analytics.popularityDelta}</span></div>
                     <div class="info-chip"><span class="info-label">Seat Δ</span><span class="info-value" style="font-size:1rem;color:${analytics.seatDelta >= 0 ? 'var(--success)' : 'var(--crimson)'};">${analytics.seatDelta > 0 ? '+' : ''}${analytics.seatDelta}</span></div>
                     <div class="info-chip"><span class="info-label">Trust Δ</span><span class="info-value" style="font-size:1rem;color:${analytics.trustDelta >= 0 ? 'var(--success)' : 'var(--crimson)'};">${analytics.trustDelta > 0 ? '+' : ''}${analytics.trustDelta}</span></div>
                 </div>
-                <div style="font-size:0.76rem;color:var(--text-secondary);margin-bottom:8px;">Top turning points</div>
+                <div class="run-section-label" style="font-size:0.76rem;color:var(--text-secondary);margin-bottom:8px;">Top turning points</div>
                 <div class="mp-list" style="max-height:170px;margin-bottom:10px;">
                     ${analytics.topTurningPoints.length === 0
                         ? '<p class="placeholder-text" style="padding:12px;">No high-impact turning points yet.</p>'
@@ -1250,7 +1437,7 @@ window.Game.UI.Screens = {
                         `).join('')
                     }
                 </div>
-                <div style="font-size:0.76rem;color:var(--text-secondary);margin-bottom:8px;">Timeline</div>
+                <div class="run-section-label" style="font-size:0.76rem;color:var(--text-secondary);margin-bottom:8px;">Timeline</div>
                 <div class="mp-list" style="max-height:280px;">
                     ${analytics.filteredEntries.length === 0
                         ? '<p class="placeholder-text" style="padding:18px;">No timeline events yet.</p>'
@@ -1281,12 +1468,12 @@ window.Game.UI.Screens = {
         if (!modal) return;
 
         modal.innerHTML = `
-            <div class="modal-content" style="max-width:860px;">
+            <div class="modal-content sandbox-modal" style="max-width:860px;">
                 <div class="modal-header">
                     <h3>🧪 Balance Sandbox</h3>
                     <button class="modal-close" id="modal-close">✕</button>
                 </div>
-                <div style="display:flex;gap:8px;align-items:center;margin-bottom:10px;">
+                <div class="sandbox-controls" style="margin-bottom:10px;">
                     <label for="sandbox-iterations" style="font-size:0.8rem;color:var(--text-secondary);">Iterations</label>
                     <input id="sandbox-iterations" class="form-input form-input-short" type="number" min="5" max="500" value="120" style="max-width:120px;">
                     <button class="btn-primary" id="btn-run-sandbox" style="padding:9px 16px;">Run Simulation</button>
@@ -1305,11 +1492,11 @@ window.Game.UI.Screens = {
                 return;
             }
             target.innerHTML = `
-                <div class="results-table-header" style="grid-template-columns:1.2fr .9fr .8fr .7fr .7fr .7fr;">
+                <div class="results-table-header sandbox-results-header">
                     <span>Party</span><span>Win Rate</span><span>Avg Seats</span><span>P10</span><span>P50</span><span>P90</span>
                 </div>
                 ${result.stats.map(row => `
-                    <div class="results-row" style="grid-template-columns:1.2fr .9fr .8fr .7fr .7fr .7fr;">
+                    <div class="results-row sandbox-results-row">
                         <span>${row.thaiName} <small>${row.shortName}</small></span>
                         <span>${row.winRate}%</span>
                         <span>${row.avgSeats}</span>
@@ -1317,7 +1504,7 @@ window.Game.UI.Screens = {
                         <span>${row.p50}</span>
                         <span>${row.p90}</span>
                     </div>
-                    <div style="font-size:0.68rem;color:var(--text-dim);padding:0 12px 8px;">
+                    <div class="sandbox-results-buckets" style="font-size:0.68rem;color:var(--text-dim);padding:0 12px 8px;">
                         Seat buckets: 0-99: ${row.buckets['0-99']} | 100-199: ${row.buckets['100-199']} | 200-250: ${row.buckets['200-250']} | 251+: ${row.buckets['251+']}
                     </div>
                 `).join('')}
@@ -1970,7 +2157,7 @@ window.Game.UI.Screens = {
     _showCandidateEditor(candidatesList, onUpdate) {
         const modal = document.getElementById('modal');
         modal.innerHTML = `
-            <div class="modal-content mp-picker-modal">
+            <div class="modal-content mp-picker-modal candidate-editor-modal">
                 <div class="modal-header">
                     <h3>👤 Add Candidate Names</h3>
                     <button class="modal-close" id="modal-close">✕</button>
@@ -1980,7 +2167,7 @@ window.Game.UI.Screens = {
                     Enter one name per line.
                 </p>
                 <textarea id="cand-bulk-input" rows="10" class="form-input form-textarea" style="width:100%;font-size:0.85rem;" placeholder="สมชาย ใจดี&#10;พรทิพย์ แสงทอง&#10;ธนกร ศรีสุข">${candidatesList.join('\n')}</textarea>
-                <div style="display:flex;gap:8px;margin-top:12px;">
+                <div class="candidate-editor-actions" style="display:flex;gap:8px;margin-top:12px;">
                     <button class="btn-primary" id="btn-save-candidates" style="flex:1;">💾 Save Candidates</button>
                     <button class="btn-small" id="btn-gen-random" style="flex:0.6;text-align:center;">🎲 Generate Random</button>
                 </div>
@@ -2016,12 +2203,7 @@ window.Game.UI.Screens = {
         this.show('screen-campaign');
 
         // Make sure map is in the campaign screen
-        const campaignScreen = document.getElementById('screen-campaign');
-        const mapEl = document.getElementById('map-container');
-        if (campaignScreen && mapEl) {
-            // Insert map as first child of campaign screen
-            campaignScreen.insertBefore(mapEl, campaignScreen.firstChild);
-        }
+        window.Game.UI.Map.moveTo('screen-campaign');
 
         const sidebar = document.getElementById('campaign-sidebar');
         if (!sidebar) return;
@@ -2409,12 +2591,7 @@ window.Game.UI.Screens = {
         this.show('screen-election');
 
         // Move map to election screen container
-        const elMapContainer = document.getElementById('map-container-election');
-        const mapEl = document.getElementById('map-container');
-        if (elMapContainer && mapEl) {
-            elMapContainer.innerHTML = '';
-            elMapContainer.appendChild(mapEl);
-        }
+        window.Game.UI.Map.moveTo('map-container-election');
 
         const panel = document.getElementById('election-results-panel');
         if (!panel) return;
@@ -2966,6 +3143,7 @@ window.Game.UI.Screens = {
         const playerParty = gameState.parties.find(p => p.id === gameState.playerPartyId);
         if (!playerParty) return;
         const isOpposition = gameState.playerRole === 'opposition';
+        const showKeyboardHint = !this._isMobileLayout();
         const parliamentEngine = window.Game.Engine.Parliament;
         const govBillStatus = !isOpposition
             ? parliamentEngine.getGovernmentBillSessionStatus(gameState)
@@ -3009,12 +3187,7 @@ window.Game.UI.Screens = {
         this.show('screen-parliament');
         try {
 
-        const parlMapContainer = document.getElementById('parliament-map-container');
-        const mapEl = document.getElementById('map-container');
-        if (parlMapContainer && mapEl) {
-            parlMapContainer.innerHTML = '';
-            parlMapContainer.appendChild(mapEl);
-        }
+        window.Game.UI.Map.moveTo('parliament-map-container');
 
         const main = document.getElementById('parliament-main');
         if (!main) return;
@@ -3320,7 +3493,7 @@ window.Game.UI.Screens = {
                     </div>
 
                     <h4 style="margin-top:20px">🎛️ Actions</h4>
-                    <div style="font-size:0.68rem;color:var(--text-dim);margin-bottom:8px;">Shortcuts: Q = end Question Time, A = adjourn.</div>
+                    <div style="font-size:0.68rem;color:var(--text-dim);margin-bottom:8px;">${showKeyboardHint ? 'Shortcuts: Q = end Question Time, A = adjourn.' : 'Use touch controls below to progress session phases.'}</div>
                     <button class="btn-danger" id="btn-no-confidence">
                         ${isOpposition ? 'Launch No-Confidence Motion (-40 cap, 1 action)' : 'Test No-Confidence Survival'}
                     </button>
@@ -3819,7 +3992,7 @@ window.Game.UI.Screens = {
         const partyName = party ? party.thaiName : partyId;
         const partyColor = party ? party.hexColor : '#666';
         modal.innerHTML = `
-            <div class="modal-content coalition-event-modal" style="max-width:550px;">
+            <div class="modal-content coalition-event-modal">
                 <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px;padding-bottom:12px;border-bottom:1px solid var(--border-subtle);">
                     <span style="font-size:2.2rem;">${event.icon}</span>
                     <div>
@@ -3829,7 +4002,7 @@ window.Game.UI.Screens = {
                     </div>
                 </div>
                 <p style="font-size:0.9rem;color:var(--text-secondary);line-height:1.5;margin-bottom:16px;">${event.description}</p>
-                <div style="display:flex;flex-direction:column;gap:10px;">
+                <div class="coalition-event-options">
                     ${event.options.map((opt, idx) => {
                         const eff = opt.effect;
                         const parts = [];
@@ -3839,14 +4012,7 @@ window.Game.UI.Screens = {
                         if (eff.popularity) parts.push(`Pop ${eff.popularity > 0 ? '+' : ''}${eff.popularity}`);
                         if (eff.riskWalkout) parts.push('⚠️ Risk walkout');
                         return `
-                        <div class="crisis-option-card coalition-evt-option" data-idx="${idx}" style="
-                            background: var(--bg-card);
-                            border: 1px solid var(--border-subtle);
-                            border-radius: 10px;
-                            padding: 14px;
-                            cursor: pointer;
-                            transition: all 0.2s ease;
-                        ">
+                        <div class="crisis-option-card coalition-evt-option" data-idx="${idx}">
                             <div style="font-size:1rem;font-weight:600;color:var(--text-primary);">${opt.label}</div>
                             <div style="font-size:0.75rem;color:var(--text-dim);margin-top:4px;">${parts.join(' · ')}</div>
                         </div>`;
@@ -3856,18 +4022,29 @@ window.Game.UI.Screens = {
         `;
         modal.classList.remove('hidden');
 
+        let selected = false;
         modal.querySelectorAll('.coalition-evt-option').forEach(card => {
-            card.addEventListener('mouseenter', () => {
+            const applyActive = () => {
                 card.style.borderColor = partyColor;
                 card.style.boxShadow = `0 0 15px ${partyColor}33`;
                 card.style.transform = 'translateY(-2px)';
-            });
-            card.addEventListener('mouseleave', () => {
+            };
+
+            const clearActive = () => {
                 card.style.borderColor = 'var(--border-subtle)';
                 card.style.boxShadow = 'none';
                 card.style.transform = 'none';
-            });
+            };
+
+            card.addEventListener('pointerenter', applyActive);
+            card.addEventListener('pointerleave', clearActive);
+            card.addEventListener('touchstart', applyActive, { passive: true });
+            card.addEventListener('focus', applyActive);
+            card.addEventListener('blur', clearActive);
+
             card.addEventListener('click', () => {
+                if (selected) return;
+                selected = true;
                 modal.classList.add('hidden');
                 window.Game.App.resolveCoalitionEventChoice(partyId, event, parseInt(card.dataset.idx));
             });
@@ -4235,16 +4412,9 @@ window.Game.UI.Screens = {
                     ${chainBadge}
                     ${stressSummary}
                 </div>
-                <div class="crisis-options" style="display:flex;flex-direction:column;gap:12px;">
+                <div class="crisis-options">
                     ${crisis.options.map((opt, idx) => `
-                        <div class="crisis-option-card" data-idx="${idx}" style="
-                            background: var(--bg-card);
-                            border: 1px solid var(--border-subtle);
-                            border-radius: 10px;
-                            padding: 16px;
-                            cursor: pointer;
-                            transition: all 0.2s ease;
-                        ">
+                        <div class="crisis-option-card" data-idx="${idx}">
                             <div style="display:flex;justify-content:space-between;align-items:center;">
                                 <div style="font-size:1.1rem;font-weight:600;color:var(--text-primary);">${opt.label}</div>
                                 <div style="font-size:0.75rem;color:var(--text-dim);background:rgba(255,255,255,0.06);padding:2px 8px;border-radius:4px;">
@@ -4273,18 +4443,29 @@ window.Game.UI.Screens = {
         modal.classList.remove('hidden');
 
         // Hover effects
+        let selected = false;
         modal.querySelectorAll('.crisis-option-card').forEach(card => {
-            card.addEventListener('mouseenter', () => {
+            const applyActive = () => {
                 card.style.borderColor = severityColor;
                 card.style.boxShadow = `0 0 20px ${severityColor}33`;
                 card.style.transform = 'translateY(-2px)';
-            });
-            card.addEventListener('mouseleave', () => {
+            };
+
+            const clearActive = () => {
                 card.style.borderColor = 'var(--border-subtle)';
                 card.style.boxShadow = 'none';
                 card.style.transform = 'none';
-            });
+            };
+
+            card.addEventListener('pointerenter', applyActive);
+            card.addEventListener('pointerleave', clearActive);
+            card.addEventListener('touchstart', applyActive, { passive: true });
+            card.addEventListener('focus', applyActive);
+            card.addEventListener('blur', clearActive);
+
             card.addEventListener('click', () => {
+                if (selected) return;
+                selected = true;
                 modal.classList.add('hidden');
                 window.Game.App.resolveCrisis(parseInt(card.dataset.idx));
             });
