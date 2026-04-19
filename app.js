@@ -235,12 +235,55 @@ window.Game.App = {
             }
         };
 
-        const refreshUi = () => {
+        const shouldDeferMultiplayerRefresh = () => {
+            const current = this.currentState;
+            const inRealtimePhase = (
+                current === this.STATES.STATE_CAMPAIGN
+                || current === this.STATES.STATE_COALITION
+                || current === this.STATES.STATE_PARLIAMENT_TERM
+            );
+            if (!inRealtimePhase) return false;
+
+            const screens = window.Game && window.Game.UI && window.Game.UI.Screens;
+            const modal = document.getElementById('modal');
+            if (modal && !modal.classList.contains('hidden')) {
+                const title = modal.querySelector('.modal-header h3');
+                const titleText = String((title && title.textContent) || '').toLowerCase();
+                const isMultiplayerModal = titleText.includes('multiplayer session');
+                if (!isMultiplayerModal) return true;
+            }
+
+            const active = document.activeElement;
+            if (active && active !== document.body) {
+                const tag = String(active.tagName || '').toLowerCase();
+                const editable = !!active.isContentEditable;
+                if (tag === 'input' || tag === 'textarea' || tag === 'select' || editable) {
+                    return true;
+                }
+            }
+
+            if (screens && typeof screens.onProvinceClick === 'function') {
+                return true;
+            }
+
+            return false;
+        };
+
+        const refreshUi = ({ force = false } = {}) => {
             if (this._multiplayerRefreshScheduled) return;
             this._multiplayerRefreshScheduled = true;
 
             const flush = () => {
                 this._multiplayerRefreshScheduled = false;
+                if (!force && shouldDeferMultiplayerRefresh()) {
+                    if (!this._multiplayerDeferredRefreshTimer) {
+                        this._multiplayerDeferredRefreshTimer = window.setTimeout(() => {
+                            this._multiplayerDeferredRefreshTimer = 0;
+                            refreshUi();
+                        }, 180);
+                    }
+                    return;
+                }
                 refreshUiNow();
             };
 
