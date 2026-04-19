@@ -46,22 +46,22 @@
 			"shortName": "DA"
 		},
 		{
-			"id": "pracha_chat",
+			"id": "setthakit",
+			"name": "Wealth Party",
+			"thaiName": "พรรคมั่งคั่ง",
+			"shortName": "WTH"
+		},
+		{
+			"id": "prachachat",
 			"name": "Pracha Party",
-			"thaiName": "พรรคประชา",
+			"thaiName": "พรรคปวงชน",
 			"shortName": "PRC"
 		},
 		{
-			"id": "thai_sang_thai",
+			"id": "thaisangthai",
 			"name": "Thai Build",
 			"thaiName": "ไทยสร้างสรรค์",
 			"shortName": "TB"
-		},
-		{
-			"id": "chart_thai",
-			"name": "Chart Thai Power",
-			"thaiName": "ชาติไทยพลัง",
-			"shortName": "CTP"
 		}
 	]
 }
