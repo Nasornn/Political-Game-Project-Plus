@@ -346,9 +346,10 @@ window.Game.App = {
             ensureState();
             this._applyMultiplayerRoomSnapshot(payload);
             const transitioned = syncUiStateFromMultiplayerRoom();
-            if (!transitioned) {
-                refreshUi();
+            if (transitioned) {
+                this._applyMultiplayerRoomSnapshot(payload);
             }
+            refreshUi();
         };
 
         mpClient.on('room_joined', (payload = {}) => {
@@ -515,7 +516,9 @@ window.Game.App = {
                 upsertOffer(payload.offer);
                 if (payload.offer.targetPlayerId === this.state.multiplayer.playerId) {
                     const actor = (this.state.multiplayer.players || []).find(p => p.playerId === payload.offer.fromPlayerId);
-                    const fromLabel = actor ? actor.name : 'A player';
+                    const fromLabel = actor
+                        ? actor.name
+                        : (payload.offer.fromPartyName || payload.offer.fromPartyId || 'Coalition lead');
                     window.Game.UI.Screens.showNotification(`${fromLabel} sent you a coalition offer.`, 'info');
                 }
             }
@@ -622,6 +625,31 @@ window.Game.App = {
             ? room.coalition.pendingOffers.map(row => ({ ...row }))
             : mp.pendingCoalitionOffers;
 
+        if (room.coalition && typeof room.coalition === 'object') {
+            if (Array.isArray(room.coalition.order)) {
+                this.state.coalitionOrder = room.coalition.order.slice();
+            }
+            if (Number.isFinite(Number(room.coalition.turnIndex))) {
+                this.state.coalitionTurnIndex = Math.max(0, Math.floor(Number(room.coalition.turnIndex)));
+            }
+            if (Number.isFinite(Number(room.coalition.attempt))) {
+                this.state.coalitionAttempt = Math.max(1, Math.floor(Number(room.coalition.attempt)));
+            }
+            if (Array.isArray(room.coalition.coalitionPartyIds)) {
+                this.state.coalitionPartyIds = room.coalition.coalitionPartyIds.slice();
+            }
+            if (room.coalition.currentFormateurPartyId) {
+                const currentId = String(room.coalition.currentFormateurPartyId);
+                const existingOrder = Array.isArray(this.state.coalitionOrder) ? this.state.coalitionOrder.slice() : [];
+                if (!existingOrder.includes(currentId)) {
+                    this.state.coalitionOrder = [currentId, ...existingOrder];
+                }
+            }
+            if (room.coalition.governmentPartyId !== undefined) {
+                this.state.governmentPartyId = room.coalition.governmentPartyId || null;
+            }
+        }
+
         const selectionRows = Array.isArray(room.partySelections)
             ? room.partySelections
             : mp.players
@@ -691,6 +719,11 @@ window.Game.App = {
         if (refreshedMyPick && refreshedMyPick.partyId) {
             mp.selectedPartyId = refreshedMyPick.partyId;
             this.state.playerPartyId = refreshedMyPick.partyId;
+        }
+
+        const me = (mp.players || []).find(p => p.playerId === mp.playerId);
+        if (me && (me.role === 'government' || me.role === 'opposition')) {
+            this.state.playerRole = me.role;
         }
 
         this._updateMultiplayerCampaignProgress(mp.players.map(p => ({

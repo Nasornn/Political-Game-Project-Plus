@@ -52,11 +52,14 @@ function cleanName(raw, fallback = 'Player') {
 }
 
 function serializeRoom(room) {
+  const coalitionState = room.coalition || {};
   const pendingOffers = (((room.coalition || {}).offers) || [])
     .filter((offer) => offer.status === 'pending')
     .map((offer) => ({
       offerId: offer.offerId,
       fromPlayerId: offer.fromPlayerId,
+      fromPartyId: offer.fromPartyId || null,
+      fromPartyName: offer.fromPartyName || null,
       targetPlayerId: offer.targetPlayerId,
       targetPartyId: offer.targetPartyId || null,
       offeredMinistries: offer.offeredMinistries || 0,
@@ -84,7 +87,13 @@ function serializeRoom(room) {
       })),
     chat: Array.isArray(room.chat) ? room.chat.slice(-40) : [],
     coalition: {
-      pendingOffers
+      pendingOffers,
+      order: Array.isArray(coalitionState.order) ? coalitionState.order.slice() : [],
+      turnIndex: Number.isFinite(coalitionState.turnIndex) ? coalitionState.turnIndex : 0,
+      attempt: Number.isFinite(coalitionState.attempt) ? coalitionState.attempt : 1,
+      currentFormateurPartyId: coalitionState.currentFormateurPartyId || null,
+      coalitionPartyIds: Array.isArray(coalitionState.coalitionPartyIds) ? coalitionState.coalitionPartyIds.slice() : [],
+      governmentPartyId: coalitionState.governmentPartyId || null
     },
     election: {
       seed: ((room.election || {}).seed) || null,
@@ -220,7 +229,15 @@ function createRoom(ownerWs, name, maxPlayers = MAX_PLAYERS) {
     chat: [],
     coalition: {
       offerSeq: 1,
-      offers: []
+      offers: [],
+      order: [],
+      turnIndex: 0,
+      attempt: 1,
+      currentFormateurPartyId: null,
+      proposedPartyIds: [],
+      invitedPartyIds: [],
+      coalitionPartyIds: [],
+      governmentPartyId: null
     },
     parliament: {
       sharedBillUsageBySession: {},
@@ -456,6 +473,271 @@ function sanitizePartyId(raw) {
   return value;
 }
 
+function uniquePartyIds(values) {
+  if (!Array.isArray(values)) return [];
+  const seen = new Set();
+  const out = [];
+  for (const raw of values) {
+    const partyId = String(raw || '').trim();
+    if (!partyId || seen.has(partyId)) continue;
+    seen.add(partyId);
+    out.push(partyId);
+  }
+  return out;
+}
+
+function getElectionSeatTotals(room) {
+  return (((room.election || {}).results || {}).totalSeats) || {};
+}
+
+function getSortedCoalitionPartyOrder(room) {
+  const totals = getElectionSeatTotals(room);
+  return Object.keys(totals)
+    .filter((partyId) => Number(totals[partyId] || 0) > 0)
+    .sort((a, b) => {
+      const delta = Number(totals[b] || 0) - Number(totals[a] || 0);
+      if (delta !== 0) return delta;
+      return String(a).localeCompare(String(b));
+    });
+}
+
+function getCoalitionSeatTotal(room, partyIds) {
+  const totals = getElectionSeatTotals(room);
+  let seats = 0;
+  for (const partyId of uniquePartyIds(partyIds)) {
+    seats += Math.max(0, Math.floor(Number(totals[partyId] || 0)));
+  }
+  return seats;
+}
+
+function findPlayerByPartyId(room, partyId) {
+  const value = String(partyId || '').trim();
+  if (!value) return null;
+  return room.players.find((p) => String(p.selectedPartyId || '') === value) || null;
+}
+
+function ensureCoalitionState(room) {
+  if (!room.coalition || typeof room.coalition !== 'object') {
+    room.coalition = {};
+  }
+  if (!Number.isFinite(room.coalition.offerSeq) || room.coalition.offerSeq < 1) {
+    room.coalition.offerSeq = 1;
+  }
+  if (!Array.isArray(room.coalition.offers)) room.coalition.offers = [];
+  if (!Array.isArray(room.coalition.order)) room.coalition.order = [];
+  room.coalition.turnIndex = Math.max(0, Math.floor(Number(room.coalition.turnIndex) || 0));
+  room.coalition.attempt = Math.max(1, Math.floor(Number(room.coalition.attempt) || 1));
+  room.coalition.currentFormateurPartyId = room.coalition.currentFormateurPartyId || null;
+  room.coalition.proposedPartyIds = uniquePartyIds(room.coalition.proposedPartyIds);
+  room.coalition.invitedPartyIds = uniquePartyIds(room.coalition.invitedPartyIds);
+  room.coalition.coalitionPartyIds = uniquePartyIds(room.coalition.coalitionPartyIds);
+  room.coalition.governmentPartyId = room.coalition.governmentPartyId || null;
+}
+
+function getCurrentCoalitionFormateurPartyId(room) {
+  ensureCoalitionState(room);
+  if (room.coalition.currentFormateurPartyId) {
+    return room.coalition.currentFormateurPartyId;
+  }
+  const idx = Math.max(0, Math.floor(Number(room.coalition.turnIndex) || 0));
+  const partyId = (room.coalition.order || [])[idx] || null;
+  room.coalition.currentFormateurPartyId = partyId;
+  return partyId;
+}
+
+function resetCoalitionMandate(room, formateurPartyId, attempt = 1) {
+  ensureCoalitionState(room);
+  const partyId = String(formateurPartyId || '').trim();
+  room.coalition.currentFormateurPartyId = partyId || null;
+  room.coalition.attempt = Math.max(1, Math.floor(Number(attempt) || 1));
+  room.coalition.proposedPartyIds = partyId ? [partyId] : [];
+  room.coalition.invitedPartyIds = [];
+  room.coalition.coalitionPartyIds = partyId ? [partyId] : [];
+}
+
+function initializeCoalitionFromElection(room) {
+  ensureCoalitionState(room);
+  const order = getSortedCoalitionPartyOrder(room);
+  room.coalition.offerSeq = 1;
+  room.coalition.offers = [];
+  room.coalition.order = order;
+  room.coalition.turnIndex = 0;
+  room.coalition.governmentPartyId = null;
+  const firstFormateur = order[0] || null;
+  resetCoalitionMandate(room, firstFormateur, 1);
+  room.players.forEach((player) => {
+    player.role = null;
+  });
+}
+
+function makeCoalitionOffer(room, input = {}) {
+  ensureCoalitionState(room);
+  const offer = {
+    offerId: `off_${String(room.coalition.offerSeq++).padStart(5, '0')}`,
+    fromPlayerId: String(input.fromPlayerId || '').trim() || null,
+    fromPartyId: String(input.fromPartyId || '').trim() || null,
+    fromPartyName: String(input.fromPartyName || '').trim() || null,
+    targetPlayerId: String(input.targetPlayerId || '').trim() || null,
+    targetPartyId: String(input.targetPartyId || '').trim() || null,
+    offeredMinistries: Math.max(0, Math.min(8, Math.floor(Number(input.offeredMinistries) || 0))),
+    status: 'pending',
+    createdAt: now(),
+    respondedAt: null
+  };
+  room.coalition.offers.push(offer);
+  return offer;
+}
+
+function finalizeCoalitionGovernment(room, governmentPartyId, coalitionPartyIds) {
+  ensureCoalitionState(room);
+
+  const coalition = uniquePartyIds(coalitionPartyIds);
+  const governingPartyId = String(governmentPartyId || coalition[0] || '').trim() || null;
+  const normalizedCoalition = governingPartyId
+    ? uniquePartyIds([governingPartyId, ...coalition])
+    : coalition;
+
+  room.coalition.governmentPartyId = governingPartyId;
+  room.coalition.currentFormateurPartyId = governingPartyId;
+  room.coalition.proposedPartyIds = normalizedCoalition.slice();
+  room.coalition.coalitionPartyIds = normalizedCoalition.slice();
+
+  room.players.forEach((player) => {
+    const partyId = String(player.selectedPartyId || '').trim();
+    player.role = (partyId && normalizedCoalition.includes(partyId)) ? 'government' : 'opposition';
+  });
+
+  room.state = 'parliament';
+  room.lastActivityAt = now();
+  sendRoomUpdate(room);
+}
+
+function advanceCoalitionMandate(room) {
+  ensureCoalitionState(room);
+  const nextTurnIndex = Math.max(0, Math.floor(Number(room.coalition.turnIndex) || 0)) + 1;
+
+  if (nextTurnIndex >= room.coalition.order.length) {
+    const fallbackPartyId = room.coalition.order[0] || null;
+    if (fallbackPartyId) {
+      finalizeCoalitionGovernment(room, fallbackPartyId, [fallbackPartyId]);
+    }
+    return false;
+  }
+
+  room.coalition.turnIndex = nextTurnIndex;
+  const nextFormateurPartyId = room.coalition.order[nextTurnIndex] || null;
+  resetCoalitionMandate(room, nextFormateurPartyId, 1);
+  return true;
+}
+
+function runCoalitionAutomation(room) {
+  if (!room || room.state !== 'coalition') return;
+  ensureCoalitionState(room);
+  if (!room.coalition.order.length) return;
+
+  let safety = 0;
+  while (room.state === 'coalition' && safety < 24) {
+    safety += 1;
+
+    const formateurPartyId = getCurrentCoalitionFormateurPartyId(room);
+    if (!formateurPartyId) return;
+
+    if (!Array.isArray(room.coalition.proposedPartyIds) || room.coalition.proposedPartyIds[0] !== formateurPartyId) {
+      resetCoalitionMandate(room, formateurPartyId, room.coalition.attempt || 1);
+    }
+
+    room.coalition.coalitionPartyIds = uniquePartyIds(room.coalition.proposedPartyIds);
+
+    const formateurPlayer = findPlayerByPartyId(room, formateurPartyId);
+    if (formateurPlayer) {
+      sendRoomUpdate(room);
+      return;
+    }
+
+    const aiSenderId = `ai_${formateurPartyId}`;
+    const pendingOffer = (room.coalition.offers || []).find((offer) =>
+      offer.status === 'pending' &&
+      offer.fromPlayerId === aiSenderId
+    );
+    if (pendingOffer) return;
+
+    let waitingOnPlayer = false;
+    for (const partyId of room.coalition.order) {
+      if (partyId === formateurPartyId) continue;
+      if (room.coalition.proposedPartyIds.includes(partyId)) continue;
+      if (room.coalition.invitedPartyIds.includes(partyId)) continue;
+      if (getCoalitionSeatTotal(room, room.coalition.proposedPartyIds) >= 251) break;
+
+      const playerForParty = findPlayerByPartyId(room, partyId);
+      room.coalition.invitedPartyIds = uniquePartyIds([...room.coalition.invitedPartyIds, partyId]);
+
+      if (playerForParty) {
+        const existingPending = (room.coalition.offers || []).find((offer) =>
+          offer.status === 'pending' &&
+          offer.fromPlayerId === aiSenderId &&
+          offer.targetPlayerId === playerForParty.playerId
+        );
+        if (!existingPending) {
+          const offer = makeCoalitionOffer(room, {
+            fromPlayerId: aiSenderId,
+            fromPartyId: formateurPartyId,
+            fromPartyName: formateurPartyId,
+            targetPlayerId: playerForParty.playerId,
+            targetPartyId: partyId,
+            offeredMinistries: 1
+          });
+          room.lastActivityAt = now();
+          broadcastRoom(room, {
+            type: 'coalition_offer_pending',
+            roomId: room.id,
+            offer,
+            at: now()
+          });
+          sendRoomUpdate(room);
+        }
+        waitingOnPlayer = true;
+        break;
+      }
+
+      room.coalition.proposedPartyIds.push(partyId);
+      room.coalition.coalitionPartyIds = uniquePartyIds(room.coalition.proposedPartyIds);
+    }
+
+    if (waitingOnPlayer) return;
+
+    const coalitionSeats = getCoalitionSeatTotal(room, room.coalition.proposedPartyIds);
+    if (coalitionSeats >= 251) {
+      finalizeCoalitionGovernment(room, formateurPartyId, room.coalition.proposedPartyIds);
+      return;
+    }
+
+    const remainingCandidates = room.coalition.order.filter((partyId) =>
+      partyId !== formateurPartyId &&
+      !room.coalition.proposedPartyIds.includes(partyId) &&
+      !room.coalition.invitedPartyIds.includes(partyId)
+    );
+
+    if (remainingCandidates.length > 0) {
+      continue;
+    }
+
+    if ((room.coalition.attempt || 1) < 2) {
+      resetCoalitionMandate(room, formateurPartyId, 2);
+      room.lastActivityAt = now();
+      sendRoomUpdate(room);
+      continue;
+    }
+
+    const advanced = advanceCoalitionMandate(room);
+    if (!advanced) {
+      return;
+    }
+
+    room.lastActivityAt = now();
+    sendRoomUpdate(room);
+  }
+}
+
 function startPartySelection(room) {
   if (room.state !== 'lobby') return;
   room.state = 'party_selection';
@@ -484,11 +766,23 @@ function startCampaign(room) {
   room.election.results = null;
   room.election.resultsByPlayerId = null;
   room.election.lockedAt = null;
+  ensureCoalitionState(room);
+  room.coalition.offerSeq = 1;
+  room.coalition.offers = [];
+  room.coalition.order = [];
+  room.coalition.turnIndex = 0;
+  room.coalition.attempt = 1;
+  room.coalition.currentFormateurPartyId = null;
+  room.coalition.proposedPartyIds = [];
+  room.coalition.invitedPartyIds = [];
+  room.coalition.coalitionPartyIds = [];
+  room.coalition.governmentPartyId = null;
   room.actionOrder = 0;
 
   room.players.forEach((p) => {
     p.turnsCompleted = 0;
     p.campaignComplete = false;
+    p.role = null;
   });
 
   broadcastRoom(room, {
@@ -674,6 +968,12 @@ function startCoalitionPhase(ws) {
     return;
   }
 
+  initializeCoalitionFromElection(room);
+  if (!room.coalition.order.length) {
+    safeSend(ws, { type: 'error', code: 'coalition_order_missing', message: 'No valid election seat totals found for coalition phase.' });
+    return;
+  }
+
   room.state = 'coalition';
   room.lastActivityAt = now();
 
@@ -684,6 +984,7 @@ function startCoalitionPhase(ws) {
   });
 
   sendRoomUpdate(room);
+  runCoalitionAutomation(room);
 }
 
 function applyPartySelection(ws, message) {
@@ -797,6 +1098,14 @@ function createCoalitionOffer(ws, message) {
     return;
   }
 
+  ensureCoalitionState(room);
+  const currentFormateurPartyId = getCurrentCoalitionFormateurPartyId(room);
+  const fromPartyId = String(fromPlayer.selectedPartyId || '').trim();
+  if (!currentFormateurPartyId || !fromPartyId || fromPartyId !== currentFormateurPartyId) {
+    safeSend(ws, { type: 'error', code: 'not_your_turn', message: 'Only the current coalition lead can send invitations.' });
+    return;
+  }
+
   const targetPlayerId = String(message.targetPlayerId || '').trim();
   const targetPlayer = findPlayer(room, targetPlayerId);
   if (!targetPlayer || targetPlayer.playerId === fromPlayer.playerId) {
@@ -814,18 +1123,20 @@ function createCoalitionOffer(ws, message) {
     return;
   }
 
-  const offer = {
-    offerId: `off_${String(room.coalition.offerSeq++).padStart(5, '0')}`,
-    fromPlayerId: fromPlayer.playerId,
-    targetPlayerId: targetPlayer.playerId,
-    targetPartyId: String(message.targetPartyId || targetPlayer.selectedPartyId || '').trim() || null,
-    offeredMinistries: Math.max(0, Math.min(8, Math.floor(Number(message.offeredMinistries) || 0))),
-    status: 'pending',
-    createdAt: now(),
-    respondedAt: null
-  };
+  const targetPartyId = String(message.targetPartyId || targetPlayer.selectedPartyId || '').trim() || null;
+  if (targetPartyId) {
+    room.coalition.invitedPartyIds = uniquePartyIds([...room.coalition.invitedPartyIds, targetPartyId]);
+  }
 
-  room.coalition.offers.push(offer);
+  const offer = makeCoalitionOffer(room, {
+    fromPlayerId: fromPlayer.playerId,
+    fromPartyId,
+    fromPartyName: fromPlayer.selectedPartyName || fromPartyId,
+    targetPlayerId: targetPlayer.playerId,
+    targetPartyId,
+    offeredMinistries: message.offeredMinistries
+  });
+
   room.lastActivityAt = now();
 
   broadcastRoom(room, {
@@ -858,8 +1169,19 @@ function respondCoalitionOffer(ws, message) {
   }
 
   const accepted = !!message.accept;
+  ensureCoalitionState(room);
   offer.status = accepted ? 'accepted' : 'rejected';
   offer.respondedAt = now();
+
+  if (offer.targetPartyId) {
+    room.coalition.invitedPartyIds = uniquePartyIds([...room.coalition.invitedPartyIds, offer.targetPartyId]);
+  }
+
+  if (accepted && offer.targetPartyId) {
+    room.coalition.proposedPartyIds = uniquePartyIds([...room.coalition.proposedPartyIds, offer.targetPartyId]);
+    room.coalition.coalitionPartyIds = uniquePartyIds(room.coalition.proposedPartyIds);
+  }
+
   room.lastActivityAt = now();
 
   broadcastRoom(room, {
@@ -871,6 +1193,11 @@ function respondCoalitionOffer(ws, message) {
     at: now()
   });
   sendRoomUpdate(room);
+
+  const fromPlayerId = String(offer.fromPlayerId || '');
+  if (fromPlayerId.startsWith('ai_')) {
+    runCoalitionAutomation(room);
+  }
 }
 
 function publishSharedGovernmentBillUsage(room, sessionNumber, extra = {}) {
