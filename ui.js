@@ -439,6 +439,8 @@ window.Game.UI.Screens = {
     _responsiveWatcher: null,
     _multiplayerConnectPending: false,
     _multiplayerNameSeed: 'Player',
+    _multiplayerChatDraftByChannel: {},
+    _multiplayerChatFocusedChannel: null,
 
     _setMetaToolbarButtonState(buttonId, enabled, lockedReason, hideWhenDisabled = false) {
         const btn = document.getElementById(buttonId);
@@ -1382,39 +1384,83 @@ window.Game.UI.Screens = {
         );
     },
 
-    _renderMultiplayerChatBox(gameState, channel = 'global') {
-        if (!this._shouldRenderMultiplayerChat(gameState)) return '';
-        const mpState = gameState.multiplayer || {};
-        const rows = Array.isArray(mpState.chatMessages) ? mpState.chatMessages.slice(-24) : [];
-        const channelKey = String(channel || 'global').toLowerCase().replace(/[^a-z0-9_-]+/g, '-') || 'global';
-        const boxId = `mp-chat-box-${channelKey}`;
-        const logId = `mp-chat-log-${channelKey}`;
-        const inputId = `mp-chat-input-${channelKey}`;
-        const sendId = `mp-chat-send-${channelKey}`;
-        const escapeHtml = (value) => String(value || '')
+    _normalizeMultiplayerChatChannel(channel = 'global') {
+        return String(channel || 'global').toLowerCase().replace(/[^a-z0-9_-]+/g, '-') || 'global';
+    },
+
+    _escapeMultiplayerChatValue(value) {
+        return String(value || '')
             .replace(/&/g, '&amp;')
             .replace(/</g, '&lt;')
             .replace(/>/g, '&gt;')
             .replace(/"/g, '&quot;')
             .replace(/'/g, '&#39;');
+    },
+
+    appendMultiplayerChatMessage(entry = null, channel = null) {
+        if (!entry || typeof entry !== 'object') return false;
+
+        const channelKey = this._normalizeMultiplayerChatChannel(channel || entry.channel || 'global');
+        const log = document.getElementById(`mp-chat-log-${channelKey}`);
+        if (!log) return false;
+
+        const row = document.createElement('div');
+        row.className = 'mp-pick-card';
+        row.style.cursor = 'default';
+        row.innerHTML = `
+            <span class="mp-name">${this._escapeMultiplayerChatValue(entry.name || 'Player')}</span>
+            <span class="mp-loyalty">${this._escapeMultiplayerChatValue(entry.channel || channelKey)}</span>
+            <span class="mp-corruption">${this._escapeMultiplayerChatValue(entry.text || '')}</span>
+        `;
+
+        const app = window.Game.App;
+        const playerId = app && app.state && app.state.multiplayer ? app.state.multiplayer.playerId : null;
+        if (playerId && entry.playerId === playerId) {
+            const mine = row.querySelector('.mp-name');
+            if (mine) mine.textContent = `${entry.name || 'Player'} (You)`;
+        }
+
+        const placeholder = log.querySelector('.placeholder-text');
+        if (placeholder) {
+            placeholder.remove();
+        }
+
+        log.appendChild(row);
+        while (log.children.length > 24) {
+            log.removeChild(log.firstElementChild);
+        }
+        log.scrollTop = log.scrollHeight;
+        return true;
+    },
+
+    _renderMultiplayerChatBox(gameState, channel = 'global') {
+        if (!this._shouldRenderMultiplayerChat(gameState)) return '';
+        const mpState = gameState.multiplayer || {};
+        const rows = Array.isArray(mpState.chatMessages) ? mpState.chatMessages.slice(-24) : [];
+        const channelKey = this._normalizeMultiplayerChatChannel(channel);
+        const boxId = `mp-chat-box-${channelKey}`;
+        const logId = `mp-chat-log-${channelKey}`;
+        const inputId = `mp-chat-input-${channelKey}`;
+        const sendId = `mp-chat-send-${channelKey}`;
+        const draftValue = String((this._multiplayerChatDraftByChannel || {})[channelKey] || '');
 
         return `
-            <div class="setup-scenario-panel" id="${boxId}" style="margin-top:10px;">
+            <div class="setup-scenario-panel mp-chat-box" id="${boxId}" style="margin-top:10px;">
                 <div class="setup-scenario-title">Room Chat</div>
                 <div class="mp-list" id="${logId}" style="max-height:150px;margin-bottom:8px;">
                     ${rows.length === 0
                         ? '<p class="placeholder-text" style="padding:10px;">No messages yet.</p>'
                         : rows.map(row => `
                             <div class="mp-pick-card" style="cursor:default;">
-                                <span class="mp-name">${escapeHtml(row.name || 'Player')}${row.playerId === mpState.playerId ? ' (You)' : ''}</span>
-                                <span class="mp-loyalty">${escapeHtml(row.channel || channel)}</span>
-                                <span class="mp-corruption">${escapeHtml(row.text || '')}</span>
+                                <span class="mp-name">${this._escapeMultiplayerChatValue(row.name || 'Player')}${row.playerId === mpState.playerId ? ' (You)' : ''}</span>
+                                <span class="mp-loyalty">${this._escapeMultiplayerChatValue(row.channel || channel)}</span>
+                                <span class="mp-corruption">${this._escapeMultiplayerChatValue(row.text || '')}</span>
                             </div>
                         `).join('')
                     }
                 </div>
                 <div style="display:grid;grid-template-columns:1fr auto;gap:8px;">
-                    <input class="form-input" id="${inputId}" placeholder="Type message..." maxlength="280">
+                    <input class="form-input" id="${inputId}" placeholder="Type message..." maxlength="280" value="${this._escapeMultiplayerChatValue(draftValue)}">
                     <button class="btn-small" id="${sendId}" style="margin:0;text-align:center;">Send</button>
                 </div>
             </div>
@@ -1423,28 +1469,59 @@ window.Game.UI.Screens = {
 
     _bindMultiplayerChatBox(gameState, channel = 'global') {
         if (!this._shouldRenderMultiplayerChat(gameState)) return;
-        const channelKey = String(channel || 'global').toLowerCase().replace(/[^a-z0-9_-]+/g, '-') || 'global';
+        const channelKey = this._normalizeMultiplayerChatChannel(channel);
         const input = document.getElementById(`mp-chat-input-${channelKey}`);
         const sendBtn = document.getElementById(`mp-chat-send-${channelKey}`);
         if (!input || !sendBtn) return;
 
+        if (!this._multiplayerChatDraftByChannel || typeof this._multiplayerChatDraftByChannel !== 'object') {
+            this._multiplayerChatDraftByChannel = {};
+        }
+        const existingDraft = String(this._multiplayerChatDraftByChannel[channelKey] || '');
+        if (existingDraft && input.value !== existingDraft) {
+            input.value = existingDraft;
+        }
+
         const submit = () => {
-            const value = input.value.trim();
+            const value = String(input.value || '').trim();
             if (!value) return;
             const result = window.Game.App.sendMultiplayerChatMessage(value, channel);
             if (!result.success) {
                 this.showNotification(result.msg, 'error');
                 return;
             }
+            this._multiplayerChatDraftByChannel[channelKey] = '';
             input.value = '';
         };
 
         sendBtn.addEventListener('click', submit);
+        input.addEventListener('input', () => {
+            this._multiplayerChatDraftByChannel[channelKey] = String(input.value || '').slice(0, 280);
+        });
+        input.addEventListener('focus', () => {
+            this._multiplayerChatFocusedChannel = channelKey;
+        });
+        input.addEventListener('blur', () => {
+            if (this._multiplayerChatFocusedChannel === channelKey) {
+                this._multiplayerChatFocusedChannel = null;
+            }
+        });
         input.addEventListener('keydown', (ev) => {
             if (ev.key !== 'Enter') return;
             ev.preventDefault();
             submit();
         });
+
+        if (this._multiplayerChatFocusedChannel === channelKey) {
+            window.setTimeout(() => {
+                if (!document.body.contains(input)) return;
+                input.focus();
+                const len = input.value.length;
+                if (typeof input.setSelectionRange === 'function') {
+                    input.setSelectionRange(len, len);
+                }
+            }, 0);
+        }
     },
 
     async renderMultiplayerModal() {

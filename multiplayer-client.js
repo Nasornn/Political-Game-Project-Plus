@@ -443,8 +443,8 @@ window.Game.Multiplayer = {
         this._send({ type: 'government_bill_propose', bill, sessionNumber });
     },
 
-    submitGovernmentBillVote({ billId, stance, sessionNumber, result, patch } = {}) {
-        this._send({ type: 'government_bill_vote', billId, stance, sessionNumber, result, patch });
+    submitGovernmentBillVote({ billId, stance, sessionNumber, result, patch, autoResolved } = {}) {
+        this._send({ type: 'government_bill_vote', billId, stance, sessionNumber, result, patch, autoResolved: !!autoResolved });
     },
 
     submitNoConfidenceMotion({ sessionNumber, result, patch } = {}) {

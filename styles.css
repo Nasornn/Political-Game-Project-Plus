@@ -1014,7 +1014,7 @@ body {
 
 .campaign-chat-dock {
     position: absolute;
-    right: 12px;
+    left: 12px;
     bottom: 12px;
     width: min(360px, calc(100% - 24px));
     margin-top: 0 !important;
@@ -1026,6 +1026,10 @@ body {
 
 .campaign-chat-dock .mp-list {
     max-height: min(26vh, 190px) !important;
+}
+
+.mp-chat-box {
+    margin-right: auto;
 }
 
 #map-container {

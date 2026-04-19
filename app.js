@@ -368,12 +368,25 @@ window.Game.App = {
             return false;
         };
 
-        const applyRoom = (payload = {}) => {
+        const applyRoom = (payload = {}, options = {}) => {
             ensureState();
+            const previousRoomState = String((this.state.multiplayer && this.state.multiplayer.roomState) || '').toLowerCase();
             this._applyMultiplayerRoomSnapshot(payload);
             const transitioned = syncUiStateFromMultiplayerRoom();
             if (transitioned) {
                 this._applyMultiplayerRoomSnapshot(payload);
+            }
+
+            const room = payload && typeof payload === 'object' ? (payload.room || payload) : {};
+            const nextRoomState = String((room && room.state) || (this.state.multiplayer && this.state.multiplayer.roomState) || '').toLowerCase();
+            const suppressStableRefresh = !!(options && options.suppressStableRefresh);
+            const sameState = previousRoomState && nextRoomState && previousRoomState === nextRoomState;
+            const stableRealtimeState = nextRoomState === 'campaign' || nextRoomState === 'coalition' || nextRoomState === 'parliament';
+
+            // Most realtime updates in active phases already arrive via specific events.
+            // Skipping duplicate full rerenders here prevents UI/input reset while users are interacting.
+            if (!transitioned && suppressStableRefresh && sameState && stableRealtimeState) {
+                return;
             }
             refreshUi();
         };
@@ -385,7 +398,7 @@ window.Game.App = {
                 window.Game.UI.Screens.showNotification(`Joined room ${roomId}.`, 'success');
             }
         });
-        mpClient.on('room_update', applyRoom);
+        mpClient.on('room_update', (payload = {}) => applyRoom(payload, { suppressStableRefresh: true }));
         mpClient.on('match_found', applyRoom);
         mpClient.on('party_selection_started', (payload = {}) => {
             ensureState();
@@ -605,8 +618,15 @@ window.Game.App = {
         });
 
         mpClient.on('chat_message', (payload = {}) => {
-            appendChat(payload.message || null);
-            refreshUi();
+            const message = payload.message || null;
+            appendChat(message);
+            let patchedInPlace = false;
+            if (window.Game.UI && window.Game.UI.Screens && typeof window.Game.UI.Screens.appendMultiplayerChatMessage === 'function') {
+                patchedInPlace = !!window.Game.UI.Screens.appendMultiplayerChatMessage(message);
+            }
+            if (!patchedInPlace) {
+                refreshUi();
+            }
         });
 
         mpClient.on('government_bill_shared_update', (payload = {}) => {
@@ -653,6 +673,35 @@ window.Game.App = {
                 window.Game.UI.Screens.showNotification(`${title} was proposed for opposition vote.`, 'info');
             }
 
+            const shouldAutoResolve = !!(
+                bill
+                && bill.id
+                && payload.byPlayerId
+                && payload.byPlayerId === this.state.multiplayer.playerId
+                && this.state.playerRole === 'government'
+                && !this._hasConnectedRealtimeOppositionPlayers(this.state.multiplayer.playerId)
+            );
+
+            if (shouldAutoResolve) {
+                const result = window.Game.Engine.Parliament.resolveGovernmentBillVote(this.state, bill.id, 'oppose');
+                if (result && !result.error) {
+                    const patch = this._captureMultiplayerParliamentPatch();
+                    if (patch) {
+                        mpClient.submitGovernmentBillVote({
+                            billId: bill.id,
+                            stance: 'oppose',
+                            sessionNumber: Math.max(1, Math.floor(Number(bill.sessionNumber) || Number(this.state.sessionNumber) || 1)),
+                            result,
+                            patch,
+                            autoResolved: true
+                        });
+                        if (window.Game.UI && window.Game.UI.Screens) {
+                            window.Game.UI.Screens.showNotification('No human opposition players in room. AI opposition vote submitted.', 'info');
+                        }
+                    }
+                }
+            }
+
             this.state.multiplayer.lastUpdatedAt = Date.now();
 
             refreshUi();
@@ -675,7 +724,14 @@ window.Game.App = {
             }
 
             const result = (payload.result && typeof payload.result === 'object') ? payload.result : null;
-            if (result && window.Game.UI && window.Game.UI.Screens && payload.byPlayerId !== this.state.multiplayer.playerId) {
+            const shouldShowVerdict = !!(
+                result
+                && window.Game.UI
+                && window.Game.UI.Screens
+                && (payload.byPlayerId !== this.state.multiplayer.playerId || payload.autoResolved)
+            );
+
+            if (shouldShowVerdict) {
                 const verdict = result.passed ? 'PASSED' : 'FAILED';
                 window.Game.UI.Screens.showNotification(
                     `${result.billName || 'Government bill'}: ${verdict} (${result.aye || 0}-${result.nay || 0}-${result.abstain || 0})`,
@@ -1073,6 +1129,18 @@ window.Game.App = {
         return String(mp.roomState || '').toLowerCase() === 'parliament';
     },
 
+    _hasConnectedRealtimeOppositionPlayers(excludePlayerId = null) {
+        if (!this.isMultiplayerParliamentRealtimeVotingEnabled()) return false;
+        const mp = this.state.multiplayer || {};
+        const players = Array.isArray(mp.players) ? mp.players : [];
+        return players.some((row) => {
+            if (!row || row.playerId === excludePlayerId) return false;
+            if (row.connected === false) return false;
+            if (row.parliamentComplete) return false;
+            return String(row.role || '').toLowerCase() === 'opposition';
+        });
+    },
+
     isMultiplayerActive() {
         return !!(this.state && this.state.multiplayer && this.state.multiplayer.enabled);
     },
@@ -1336,6 +1404,9 @@ window.Game.App = {
         });
 
         this.logRunEvent('parliament', `Government bill proposed for multiplayer vote: ${normalizedBill.name}.`);
+        if (!this._hasConnectedRealtimeOppositionPlayers(this.state.multiplayer.playerId)) {
+            return { success: true, msg: `${normalizedBill.name} sent. No human opposition found, AI vote will auto-resolve.` };
+        }
         return { success: true, msg: `${normalizedBill.name} sent to opposition voting chamber.` };
     },
 

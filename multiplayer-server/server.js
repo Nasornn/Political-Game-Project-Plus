@@ -1812,7 +1812,17 @@ function submitGovernmentBillVote(ws, message) {
     return;
   }
 
-  if (player.role !== 'opposition') {
+  ensureParliamentState(room);
+  const connectedOppositionPlayers = room.players.filter((row) => (
+    row
+    && row.playerId !== player.playerId
+    && row.connected !== false
+    && !row.parliamentComplete
+    && row.role === 'opposition'
+  ));
+  const allowGovernmentAutoResolve = player.role === 'government' && connectedOppositionPlayers.length === 0;
+
+  if (player.role !== 'opposition' && !allowGovernmentAutoResolve) {
     safeSend(ws, { type: 'error', code: 'role_not_allowed', message: 'Only opposition players can resolve government bill votes.' });
     return;
   }
@@ -1822,7 +1832,6 @@ function submitGovernmentBillVote(ws, message) {
     return;
   }
 
-  ensureParliamentState(room);
   const billId = String(message.billId || '').trim();
   if (!billId) {
     safeSend(ws, { type: 'error', code: 'missing_bill_id', message: 'Bill id is required.' });
@@ -1836,8 +1845,18 @@ function submitGovernmentBillVote(ws, message) {
   }
 
   const bill = room.parliament.pendingGovernmentBills[idx];
+  if (allowGovernmentAutoResolve && bill.fromPlayerId && bill.fromPlayerId !== player.playerId) {
+    safeSend(ws, {
+      type: 'error',
+      code: 'auto_vote_not_allowed',
+      message: 'Only the bill proposer can auto-resolve when no opposition players are present.'
+    });
+    return;
+  }
+
   const stance = (message.stance === 'support' || message.stance === 'abstain') ? message.stance : 'oppose';
   const result = sanitizeGovernmentBillResolutionResult(message.result || {});
+  const autoResolved = !!message.autoResolved && allowGovernmentAutoResolve;
   result.billName = result.billName || bill.name;
   result.stance = stance;
   const sessionNumber = Math.max(1, Math.floor(Number(bill.sessionNumber) || Number(player.parliamentSessionNumber) || 1));
@@ -1862,6 +1881,7 @@ function submitGovernmentBillVote(ws, message) {
     stance,
     sessionNumber,
     result,
+    autoResolved,
     patch,
     at: now()
   });
