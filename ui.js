@@ -1386,6 +1386,11 @@ window.Game.UI.Screens = {
         if (!this._shouldRenderMultiplayerChat(gameState)) return '';
         const mpState = gameState.multiplayer || {};
         const rows = Array.isArray(mpState.chatMessages) ? mpState.chatMessages.slice(-24) : [];
+        const channelKey = String(channel || 'global').toLowerCase().replace(/[^a-z0-9_-]+/g, '-') || 'global';
+        const boxId = `mp-chat-box-${channelKey}`;
+        const logId = `mp-chat-log-${channelKey}`;
+        const inputId = `mp-chat-input-${channelKey}`;
+        const sendId = `mp-chat-send-${channelKey}`;
         const escapeHtml = (value) => String(value || '')
             .replace(/&/g, '&amp;')
             .replace(/</g, '&lt;')
@@ -1394,9 +1399,9 @@ window.Game.UI.Screens = {
             .replace(/'/g, '&#39;');
 
         return `
-            <div class="setup-scenario-panel" id="mp-chat-box" style="margin-top:10px;">
+            <div class="setup-scenario-panel" id="${boxId}" style="margin-top:10px;">
                 <div class="setup-scenario-title">Room Chat</div>
-                <div class="mp-list" id="mp-chat-log" style="max-height:150px;margin-bottom:8px;">
+                <div class="mp-list" id="${logId}" style="max-height:150px;margin-bottom:8px;">
                     ${rows.length === 0
                         ? '<p class="placeholder-text" style="padding:10px;">No messages yet.</p>'
                         : rows.map(row => `
@@ -1409,8 +1414,8 @@ window.Game.UI.Screens = {
                     }
                 </div>
                 <div style="display:grid;grid-template-columns:1fr auto;gap:8px;">
-                    <input class="form-input" id="mp-chat-input" placeholder="Type message..." maxlength="280">
-                    <button class="btn-small" id="mp-chat-send" style="margin:0;text-align:center;">Send</button>
+                    <input class="form-input" id="${inputId}" placeholder="Type message..." maxlength="280">
+                    <button class="btn-small" id="${sendId}" style="margin:0;text-align:center;">Send</button>
                 </div>
             </div>
         `;
@@ -1418,8 +1423,9 @@ window.Game.UI.Screens = {
 
     _bindMultiplayerChatBox(gameState, channel = 'global') {
         if (!this._shouldRenderMultiplayerChat(gameState)) return;
-        const input = document.getElementById('mp-chat-input');
-        const sendBtn = document.getElementById('mp-chat-send');
+        const channelKey = String(channel || 'global').toLowerCase().replace(/[^a-z0-9_-]+/g, '-') || 'global';
+        const input = document.getElementById(`mp-chat-input-${channelKey}`);
+        const sendBtn = document.getElementById(`mp-chat-send-${channelKey}`);
         if (!input || !sendBtn) return;
 
         const submit = () => {
@@ -2732,13 +2738,23 @@ window.Game.UI.Screens = {
         this._renderActionCards(gameState);
         this._setupCampaignMobileNavigation();
 
+        // Prevent duplicate chat nodes when campaign rerenders.
+        const oldCampaignChat = document.querySelector('#screen-campaign .campaign-chat-dock');
+        if (oldCampaignChat) oldCampaignChat.remove();
+
         if (this._shouldRenderMultiplayerChat(gameState)) {
             const chatMarkup = this._renderMultiplayerChatBox(gameState, 'campaign');
             if (chatMarkup) {
                 const chatWrap = document.createElement('div');
                 chatWrap.innerHTML = chatMarkup;
                 if (chatWrap.firstElementChild) {
-                    sidebar.appendChild(chatWrap.firstElementChild);
+                    chatWrap.firstElementChild.classList.add('campaign-chat-dock');
+                    const campaignScreen = document.getElementById('screen-campaign');
+                    if (campaignScreen) {
+                        campaignScreen.appendChild(chatWrap.firstElementChild);
+                    } else {
+                        sidebar.appendChild(chatWrap.firstElementChild);
+                    }
                     this._bindMultiplayerChatBox(gameState, 'campaign');
                 }
             }
@@ -3103,6 +3119,36 @@ window.Game.UI.Screens = {
         });
     },
 
+    renderElectionPending(gameState) {
+        this.show('screen-election');
+        window.Game.UI.Map.moveTo('map-container-election');
+
+        const panel = document.getElementById('election-results-panel');
+        if (!panel) return;
+
+        const app = window.Game.App;
+        const isHost = !!(app && app.isMultiplayerHost && app.isMultiplayerHost());
+        const seed = (gameState.multiplayer && gameState.multiplayer.electionSeed) || null;
+
+        panel.innerHTML = `
+            <div class="results-header">
+                <h2>🗳️ Election Processing</h2>
+                <p class="results-subtitle">Synchronizing room results before coalition</p>
+            </div>
+            <div class="setup-scenario-panel" style="margin-top:10px;">
+                <div class="setup-scenario-title">Room Sync Status</div>
+                <p class="setup-scenario-desc">
+                    ${isHost
+                        ? 'You are host. Computing and locking election results for everyone...'
+                        : 'Waiting for host to lock election results for the room...'}
+                </p>
+                <p class="setup-scenario-desc" style="margin-top:6px;color:var(--text-dim);font-size:0.78rem;">
+                    ${seed ? `Election seed: ${seed}` : 'Election seed pending...'}
+                </p>
+            </div>
+        `;
+    },
+
     // ─── ELECTION RESULTS SCREEN ───
     renderElectionResults(gameState) {
         this.show('screen-election');
@@ -3112,6 +3158,17 @@ window.Game.UI.Screens = {
 
         const panel = document.getElementById('election-results-panel');
         if (!panel) return;
+
+        const app = window.Game.App;
+        const multiplayerActive = !!(app && app.isMultiplayerActive && app.isMultiplayerActive());
+        const mpState = gameState.multiplayer || {};
+        const roomState = String(mpState.roomState || '').toLowerCase();
+        const isHost = !!(multiplayerActive && app && app.isMultiplayerHost && app.isMultiplayerHost());
+        const coalitionBtnLabel = multiplayerActive
+            ? (roomState === 'coalition'
+                ? '➡️ Enter Coalition'
+                : (isHost ? '➡️ Start Coalition (Room)' : '⏳ Waiting for Host to Start Coalition'))
+            : '➡️ Form Coalition';
 
         const results = gameState.electionResults;
         const parties = gameState.parties;
@@ -3180,7 +3237,7 @@ window.Game.UI.Screens = {
                 </div>
             </div>
             <button class="btn-primary btn-gold" id="btn-to-coalition">
-                ➡️ Form Coalition
+                ${coalitionBtnLabel}
             </button>
         `;
 
@@ -3189,7 +3246,12 @@ window.Game.UI.Screens = {
         this._runElectionReveal(panel, topParty ? topParty.hexColor : '#d4a843');
 
         document.getElementById('btn-to-coalition').addEventListener('click', () => {
-            window.Game.App.transition('STATE_COALITION');
+            const result = (window.Game.App && typeof window.Game.App.requestCoalitionPhaseFromElection === 'function')
+                ? window.Game.App.requestCoalitionPhaseFromElection()
+                : { success: true };
+            if (result && result.success === false) {
+                this.showNotification(result.msg || 'Cannot enter coalition yet.', 'info');
+            }
         });
     },
 

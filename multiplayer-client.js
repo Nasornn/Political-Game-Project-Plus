@@ -411,6 +411,14 @@ window.Game.Multiplayer = {
         this._send({ type: 'campaign_action', actionType, payload });
     },
 
+    submitElectionResults(results) {
+        this._send({ type: 'election_results_submit', results });
+    },
+
+    startCoalitionPhase() {
+        this._send({ type: 'start_coalition_phase' });
+    },
+
     sendChat({ text, channel } = {}) {
         this._send({ type: 'chat_send', text, channel });
     },
@@ -528,6 +536,9 @@ window.Game.Multiplayer = {
                 break;
             case 'election_started':
                 this._emit('election_started', msg);
+                break;
+            case 'election_results_locked':
+                this._emit('election_results_locked', msg);
                 break;
             case 'chat_message':
                 this._emit('chat_message', msg);

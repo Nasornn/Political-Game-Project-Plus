@@ -149,7 +149,11 @@ window.Game.App = {
             sharedGovernmentBillSession: 1,
             lastOrder: 0,
             lastUpdatedAt: 0,
-            electionSeed: null
+            electionSeed: null,
+            electionResultsLocked: false,
+            electionResultsSubmitted: false,
+            electionLockedAt: 0,
+            electionResultsByPlayerId: null
         };
     },
 
@@ -197,6 +201,14 @@ window.Game.App = {
                 window.Game.UI.Screens.renderSetup(this.state);
             } else if (this.currentState === this.STATES.STATE_CAMPAIGN) {
                 window.Game.UI.Screens.renderCampaign(this.state);
+            } else if (this.currentState === this.STATES.STATE_ELECTION_CALC) {
+                if (this.state.electionResults) {
+                    window.Game.UI.Screens.renderElectionResults(this.state);
+                } else if (window.Game.UI.Screens.renderElectionPending) {
+                    window.Game.UI.Screens.renderElectionPending(this.state);
+                } else {
+                    window.Game.UI.Screens.renderCampaign(this.state);
+                }
             } else if (this.currentState === this.STATES.STATE_COALITION) {
                 window.Game.UI.Screens.renderCoalition(this.state);
             } else if (this.currentState === this.STATES.STATE_PARLIAMENT_TERM) {
@@ -261,10 +273,82 @@ window.Game.App = {
             refreshUi();
         });
 
+        const maybeSubmitHostElectionResults = () => {
+            ensureState();
+            const mp = this.state.multiplayer;
+            const roomState = String(mp.roomState || '').toLowerCase();
+            if (roomState !== 'election') return false;
+            if (!this.isMultiplayerHost()) return false;
+            if (mp.electionResultsLocked) return false;
+            if (mp.electionResultsSubmitted) return false;
+            if (!this.state.electionResults) return false;
+
+            if (window.Game.Multiplayer && typeof window.Game.Multiplayer.submitElectionResults === 'function') {
+                window.Game.Multiplayer.submitElectionResults(this.state.electionResults);
+                mp.electionResultsSubmitted = true;
+                mp.lastUpdatedAt = Date.now();
+                return true;
+            }
+            return false;
+        };
+
+        const syncUiStateFromMultiplayerRoom = () => {
+            ensureState();
+            const roomState = String((this.state.multiplayer && this.state.multiplayer.roomState) || '').toLowerCase();
+            if (!roomState) return false;
+
+            if (roomState === 'party_selection') {
+                if (this.currentState !== this.STATES.STATE_SETUP) {
+                    this.transition(this.STATES.STATE_SETUP);
+                    return true;
+                }
+                return false;
+            }
+
+            if (roomState === 'campaign') {
+                if (this.currentState !== this.STATES.STATE_CAMPAIGN) {
+                    this.transition(this.STATES.STATE_CAMPAIGN);
+                    return true;
+                }
+                return false;
+            }
+
+            if (roomState === 'election') {
+                if (this.currentState !== this.STATES.STATE_ELECTION_CALC) {
+                    this.transition(this.STATES.STATE_ELECTION_CALC);
+                    maybeSubmitHostElectionResults();
+                    return true;
+                }
+                maybeSubmitHostElectionResults();
+                return false;
+            }
+
+            if (roomState === 'coalition') {
+                if (this.currentState !== this.STATES.STATE_COALITION) {
+                    this.transition(this.STATES.STATE_COALITION);
+                    return true;
+                }
+                return false;
+            }
+
+            if (roomState === 'parliament') {
+                if (this.currentState !== this.STATES.STATE_PARLIAMENT_TERM) {
+                    this.transition(this.STATES.STATE_PARLIAMENT_TERM);
+                    return true;
+                }
+                return false;
+            }
+
+            return false;
+        };
+
         const applyRoom = (payload = {}) => {
             ensureState();
             this._applyMultiplayerRoomSnapshot(payload);
-            refreshUi();
+            const transitioned = syncUiStateFromMultiplayerRoom();
+            if (!transitioned) {
+                refreshUi();
+            }
         };
 
         mpClient.on('room_joined', (payload = {}) => {
@@ -323,6 +407,10 @@ window.Game.App = {
             this.state.multiplayer.waitingForOthers = false;
             this.state.multiplayer.barrierComplete = false;
             this.state.multiplayer.myTurnsCompleted = 0;
+            this.state.multiplayer.electionResultsLocked = false;
+            this.state.multiplayer.electionResultsSubmitted = false;
+            this.state.multiplayer.electionLockedAt = 0;
+            this.state.multiplayer.electionResultsByPlayerId = null;
             if (this.currentState !== this.STATES.STATE_CAMPAIGN) {
                 this.transition(this.STATES.STATE_CAMPAIGN);
             } else {
@@ -351,16 +439,17 @@ window.Game.App = {
             this.state.multiplayer.barrierComplete = true;
             this.state.multiplayer.waitingForOthers = false;
             this.state.multiplayer.electionSeed = payload.electionSeed || null;
-            window.Game.UI.Screens.showNotification('All players finished 8/8. Moving to coalition phase.', 'success');
+            this.state.multiplayer.electionResultsLocked = false;
+            this.state.multiplayer.electionResultsSubmitted = false;
+            this.state.multiplayer.electionLockedAt = 0;
+            this.state.multiplayer.electionResultsByPlayerId = null;
+            window.Game.UI.Screens.showNotification('All players finished 8/8. Election results are being synchronized.', 'success');
             refreshUi();
         });
 
         mpClient.on('coalition_started', (payload = {}) => {
             ensureState();
             this._applyMultiplayerRoomSnapshot(payload);
-            if (!this.state.electionResults) {
-                this._runElection();
-            }
             if (this.currentState !== this.STATES.STATE_COALITION) {
                 this.transition(this.STATES.STATE_COALITION);
             } else {
@@ -370,11 +459,53 @@ window.Game.App = {
 
         mpClient.on('election_started', (payload = {}) => {
             ensureState();
+            this._applyMultiplayerRoomSnapshot(payload);
             this.state.multiplayer.barrierComplete = true;
             this.state.multiplayer.waitingForOthers = false;
             this.state.multiplayer.electionSeed = payload.electionSeed || this.state.multiplayer.electionSeed || null;
-            if (this.currentState === this.STATES.STATE_CAMPAIGN) {
+            this.state.multiplayer.electionResultsLocked = false;
+            this.state.multiplayer.electionResultsSubmitted = false;
+            this.state.multiplayer.electionLockedAt = 0;
+            this.state.multiplayer.electionResultsByPlayerId = null;
+
+            if (this.currentState !== this.STATES.STATE_ELECTION_CALC) {
                 this.transition(this.STATES.STATE_ELECTION_CALC);
+            } else {
+                refreshUi();
+            }
+
+            maybeSubmitHostElectionResults();
+        });
+
+        mpClient.on('election_results_locked', (payload = {}) => {
+            ensureState();
+            const mp = this.state.multiplayer;
+            const lockedAt = Number(payload.lockedAt || 0);
+            const duplicateLockEvent = !!(
+                mp.electionResultsLocked
+                && mp.electionLockedAt
+                && lockedAt
+                && mp.electionLockedAt === lockedAt
+            );
+
+            mp.electionResultsLocked = true;
+            mp.electionResultsByPlayerId = payload.byPlayerId || mp.electionResultsByPlayerId || null;
+            mp.electionLockedAt = lockedAt || mp.electionLockedAt || Date.now();
+            mp.electionSeed = payload.electionSeed || mp.electionSeed || null;
+
+            const lockedByMe = !!(payload.byPlayerId && payload.byPlayerId === mp.playerId && mp.electionResultsSubmitted);
+            if (!duplicateLockEvent && payload.results && !lockedByMe) {
+                this._applyElectionResults(payload.results, { source: 'multiplayer_sync' });
+            }
+
+            if (this.currentState !== this.STATES.STATE_ELECTION_CALC) {
+                this.transition(this.STATES.STATE_ELECTION_CALC);
+            } else {
+                refreshUi();
+            }
+
+            if (!lockedByMe && window.Game.UI && window.Game.UI.Screens) {
+                window.Game.UI.Screens.showNotification('Election results synchronized for all players.', 'success');
             }
         });
 
@@ -532,6 +663,21 @@ window.Game.App = {
             const byCurrentSession = Number(usageMap[localSession] || 0);
             mp.sharedGovernmentBillSession = localSession;
             mp.sharedGovernmentBillsUsed = Math.max(0, Math.floor(byCurrentSession));
+        }
+
+        if (room.election && typeof room.election === 'object') {
+            if (room.election.seed !== undefined && room.election.seed !== null) {
+                mp.electionSeed = room.election.seed;
+            }
+            if (room.election.hasResults === true) {
+                mp.electionResultsLocked = true;
+            }
+            if (room.election.resultsByPlayerId) {
+                mp.electionResultsByPlayerId = room.election.resultsByPlayerId;
+            }
+            if (room.election.lockedAt) {
+                mp.electionLockedAt = Number(room.election.lockedAt) || mp.electionLockedAt || 0;
+            }
         }
 
         mp.lastUpdatedAt = Date.now();
@@ -748,6 +894,42 @@ window.Game.App = {
             billName: String(billName || '').trim(),
             sessionNumber: this.state.sessionNumber || 1
         });
+    },
+
+    requestCoalitionPhaseFromElection() {
+        if (!this.isMultiplayerActive()) {
+            this.transition(this.STATES.STATE_COALITION);
+            return { success: true, msg: 'Entering coalition phase.' };
+        }
+
+        const mp = this.state.multiplayer || {};
+        const roomState = String(mp.roomState || '').toLowerCase();
+        if (roomState === 'coalition') {
+            if (this.currentState !== this.STATES.STATE_COALITION) {
+                this.transition(this.STATES.STATE_COALITION);
+            }
+            return { success: true, msg: 'Entering coalition phase.' };
+        }
+
+        if (roomState !== 'election') {
+            return { success: false, msg: 'Election review phase is not active.' };
+        }
+
+        if (!mp.electionResultsLocked) {
+            return { success: false, msg: 'Election results are still syncing. Please wait a moment.' };
+        }
+
+        if (!this.isMultiplayerHost()) {
+            return { success: false, msg: 'Waiting for the host to start coalition phase.' };
+        }
+
+        const mpClient = window.Game.Multiplayer;
+        if (!mpClient || typeof mpClient.startCoalitionPhase !== 'function') {
+            return { success: false, msg: 'Multiplayer client unavailable.' };
+        }
+
+        mpClient.startCoalitionPhase();
+        return { success: true, msg: 'Starting coalition phase for the room...' };
     },
 
     _ensureStateDefaults(state) {
@@ -1480,8 +1662,17 @@ window.Game.App = {
                 window.Game.UI.Screens.renderCampaign(this.state);
                 break;
             case this.STATES.STATE_ELECTION_CALC:
-                if (this.state.electionResults) window.Game.UI.Screens.renderElectionResults(this.state);
-                else window.Game.UI.Screens.renderCampaign(this.state);
+                if (this.state.electionResults) {
+                    window.Game.UI.Screens.renderElectionResults(this.state);
+                } else if (this.isMultiplayerActive() && String(this.state.multiplayer.roomState || '').toLowerCase() === 'election') {
+                    if (window.Game.UI.Screens.renderElectionPending) {
+                        window.Game.UI.Screens.renderElectionPending(this.state);
+                    } else {
+                        window.Game.UI.Screens.renderCampaign(this.state);
+                    }
+                } else {
+                    window.Game.UI.Screens.renderCampaign(this.state);
+                }
                 break;
             case this.STATES.STATE_COALITION:
                 if (this.state.electionResults) window.Game.UI.Screens.renderCoalition(this.state);
@@ -1800,6 +1991,23 @@ window.Game.App = {
                 break;
 
             case this.STATES.STATE_ELECTION_CALC:
+                if (this.isMultiplayerActive()) {
+                    const mp = this.state.multiplayer || {};
+                    const roomState = String(mp.roomState || '').toLowerCase();
+                    const waitingForLockedResults = roomState === 'election' && !mp.electionResultsLocked && !this.isMultiplayerHost();
+                    if (waitingForLockedResults) {
+                        if (window.Game.UI && window.Game.UI.Screens && typeof window.Game.UI.Screens.renderElectionPending === 'function') {
+                            window.Game.UI.Screens.renderElectionPending(this.state);
+                        } else {
+                            window.Game.UI.Screens.renderCampaign(this.state);
+                        }
+                        break;
+                    }
+                }
+                if (this.state.electionResults) {
+                    window.Game.UI.Screens.renderElectionResults(this.state);
+                    break;
+                }
                 this._runElection();
                 break;
 
@@ -2060,10 +2268,26 @@ window.Game.App = {
     },
 
     // ─── RUN ELECTION ────────────────────────────────────────
-    _runElection() {
-        console.log('🗳️ Running election...');
+    _applyElectionDistrictWinners(results) {
+        if (!results || !Array.isArray(results.districtResults)) return;
+        const winnerByDistrictId = {};
+        for (const row of results.districtResults) {
+            if (!row || !row.districtId || !row.winnerId) continue;
+            winnerByDistrictId[row.districtId] = row.winnerId;
+        }
+
+        for (const district of (this.state.districts || [])) {
+            if (!district) continue;
+            district.winningPartyId = winnerByDistrictId[district.id] || null;
+        }
+    },
+
+    _applyElectionResults(results, { source = 'local' } = {}) {
+        if (!results || typeof results !== 'object') return;
+
         const previousSeatTotals = { ...(this.state.previousElectionSeatTotals || {}) };
-        this.state.electionResults = window.Game.Engine.Election.runElection(this.state);
+        this.state.electionResults = JSON.parse(JSON.stringify(results));
+        this._applyElectionDistrictWinners(this.state.electionResults);
         window.Game.Engine.Campaign.evolveAIPersonalities(this.state, this.state.electionResults);
 
         // Log results
@@ -2080,8 +2304,12 @@ window.Game.App = {
         const seatDelta = this.state.playerPartyId
             ? ((this.state.electionResults.totalSeats[this.state.playerPartyId] || 0) - (previousSeatTotals[this.state.playerPartyId] || 0))
             : 0;
-        this.logRunEvent('election', `Election concluded. Top seats -> ${seatSummary}`, {
+        const logMessage = source === 'multiplayer_sync'
+            ? `Election synchronized from room. Top seats -> ${seatSummary}`
+            : `Election concluded. Top seats -> ${seatSummary}`;
+        this.logRunEvent('election', logMessage, {
             seatDelta,
+            source,
             turningPointScore: 2.5
         });
 
@@ -2114,6 +2342,12 @@ window.Game.App = {
 
         this.state.electionCount++;
         window.Game.UI.Screens.renderElectionResults(this.state);
+    },
+
+    _runElection() {
+        console.log('🗳️ Running election...');
+        const results = window.Game.Engine.Election.runElection(this.state);
+        this._applyElectionResults(results, { source: 'local' });
     },
 
     _ensureAllianceMemoryState() {

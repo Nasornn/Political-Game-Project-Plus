@@ -86,6 +86,12 @@ function serializeRoom(room) {
     coalition: {
       pendingOffers
     },
+    election: {
+      seed: ((room.election || {}).seed) || null,
+      hasResults: !!((room.election || {}).results),
+      lockedAt: ((room.election || {}).lockedAt) || null,
+      resultsByPlayerId: ((room.election || {}).resultsByPlayerId) || null
+    },
     parliament: {
       sharedBillUsageBySession: ((room.parliament || {}).sharedBillUsageBySession) || {}
     },
@@ -225,6 +231,12 @@ function createRoom(ownerWs, name, maxPlayers = MAX_PLAYERS) {
       startedAt: null,
       barrierCompletedAt: null,
       electionSeed: null
+    },
+    election: {
+      seed: null,
+      results: null,
+      resultsByPlayerId: null,
+      lockedAt: null
     }
   };
 
@@ -289,6 +301,18 @@ function tryResumeSession(ws, resumeToken, preferredName) {
       },
       at: now()
     });
+
+    if (room.election && room.election.results) {
+      safeSend(ws, {
+        type: 'election_results_locked',
+        roomId: room.id,
+        byPlayerId: room.election.resultsByPlayerId || null,
+        lockedAt: room.election.lockedAt || null,
+        electionSeed: room.election.seed || null,
+        results: room.election.results,
+        at: now()
+      });
+    }
 
     sendRoomUpdate(room);
     if (room.state === 'campaign') {
@@ -369,6 +393,18 @@ function joinRoom(ws, roomId, name) {
     at: now()
   });
 
+  if (room.election && room.election.results) {
+    safeSend(ws, {
+      type: 'election_results_locked',
+      roomId: room.id,
+      byPlayerId: room.election.resultsByPlayerId || null,
+      lockedAt: room.election.lockedAt || null,
+      electionSeed: room.election.seed || null,
+      results: room.election.results,
+      at: now()
+    });
+  }
+
   sendRoomUpdate(room);
   return room;
 }
@@ -444,6 +480,10 @@ function startCampaign(room) {
   room.campaign.startedAt = now();
   room.campaign.barrierCompletedAt = null;
   room.campaign.electionSeed = null;
+  room.election.seed = null;
+  room.election.results = null;
+  room.election.resultsByPlayerId = null;
+  room.election.lockedAt = null;
   room.actionOrder = 0;
 
   room.players.forEach((p) => {
@@ -467,9 +507,13 @@ function maybeCompleteBarrier(room) {
   const allDone = room.players.length >= room.minPlayers && room.players.every((p) => p.campaignComplete);
   if (!allDone) return;
 
-  room.state = 'coalition';
+  room.state = 'election';
   room.campaign.barrierCompletedAt = now();
   room.campaign.electionSeed = Math.floor(Math.random() * 2147483647);
+  room.election.seed = room.campaign.electionSeed;
+  room.election.results = null;
+  room.election.resultsByPlayerId = null;
+  room.election.lockedAt = null;
 
   broadcastRoom(room, {
     type: 'campaign_barrier_complete',
@@ -477,6 +521,161 @@ function maybeCompleteBarrier(room) {
     electionSeed: room.campaign.electionSeed,
     at: now()
   });
+
+  broadcastRoom(room, {
+    type: 'election_started',
+    room: serializeRoom(room),
+    electionSeed: room.campaign.electionSeed,
+    at: now()
+  });
+
+  sendRoomUpdate(room);
+}
+
+function sanitizeSeatMap(input) {
+  const out = {};
+  if (!input || typeof input !== 'object') return out;
+  for (const [key, value] of Object.entries(input)) {
+    const k = String(key || '').trim().slice(0, 48);
+    if (!k) continue;
+    const n = Math.max(0, Math.floor(Number(value) || 0));
+    out[k] = n;
+  }
+  return out;
+}
+
+function sanitizePopularVoteMap(input) {
+  const out = {};
+  if (!input || typeof input !== 'object') return out;
+  for (const [key, value] of Object.entries(input)) {
+    const k = String(key || '').trim().slice(0, 48);
+    if (!k) continue;
+    const n = Number(value);
+    out[k] = Number.isFinite(n) ? Math.max(0, n) : 0;
+  }
+  return out;
+}
+
+function sanitizePartyListDetail(input) {
+  const out = {};
+  if (!input || typeof input !== 'object') return out;
+  for (const [key, value] of Object.entries(input)) {
+    const k = String(key || '').trim().slice(0, 48);
+    if (!k || !value || typeof value !== 'object') continue;
+    out[k] = {
+      exactSeats: Number.isFinite(Number(value.exactSeats)) ? Number(value.exactSeats) : 0,
+      floorSeats: Math.max(0, Math.floor(Number(value.floorSeats) || 0)),
+      remainder: Number.isFinite(Number(value.remainder)) ? Number(value.remainder) : 0,
+      bonusSeats: Math.max(0, Math.floor(Number(value.bonusSeats) || 0))
+    };
+  }
+  return out;
+}
+
+function sanitizeDistrictResults(input) {
+  if (!Array.isArray(input)) return [];
+  const rows = [];
+  for (const row of input) {
+    if (!row || typeof row !== 'object') continue;
+    const districtId = Math.max(1, Math.floor(Number(row.districtId) || 0));
+    const winnerId = String(row.winnerId || '').trim().slice(0, 48);
+    if (!districtId || !winnerId) continue;
+    rows.push({
+      districtId,
+      provinceName: String(row.provinceName || '').trim().slice(0, 48),
+      seatIndex: Math.max(1, Math.floor(Number(row.seatIndex) || 1)),
+      winnerId
+    });
+    if (rows.length >= 600) break;
+  }
+  return rows;
+}
+
+function sanitizeElectionResults(input) {
+  if (!input || typeof input !== 'object') return null;
+  const districtResults = sanitizeDistrictResults(input.districtResults);
+  if (districtResults.length === 0) return null;
+  return {
+    constituencyWins: sanitizeSeatMap(input.constituencyWins),
+    partyListSeats: sanitizeSeatMap(input.partyListSeats),
+    totalSeats: sanitizeSeatMap(input.totalSeats),
+    nationalPopularVote: sanitizePopularVoteMap(input.nationalPopularVote),
+    partyListDetail: sanitizePartyListDetail(input.partyListDetail),
+    districtResults
+  };
+}
+
+function submitElectionResults(ws, message) {
+  const room = getRoomBySocket(ws);
+  const ctx = getSocketContext(ws);
+  if (!room || room.state !== 'election') {
+    safeSend(ws, { type: 'error', code: 'election_not_active', message: 'Election phase is not active.' });
+    return;
+  }
+
+  if (room.election && room.election.results) {
+    safeSend(ws, {
+      type: 'election_results_locked',
+      roomId: room.id,
+      byPlayerId: room.election.resultsByPlayerId || null,
+      lockedAt: room.election.lockedAt || null,
+      electionSeed: room.election.seed || null,
+      results: room.election.results,
+      at: now()
+    });
+    return;
+  }
+
+  const sanitized = sanitizeElectionResults(message.results || null);
+  if (!sanitized) {
+    safeSend(ws, { type: 'error', code: 'invalid_election_results', message: 'Election results payload is invalid.' });
+    return;
+  }
+
+  room.election.results = sanitized;
+  room.election.resultsByPlayerId = ctx.playerId || null;
+  room.election.lockedAt = now();
+  room.lastActivityAt = now();
+
+  broadcastRoom(room, {
+    type: 'election_results_locked',
+    roomId: room.id,
+    byPlayerId: room.election.resultsByPlayerId || null,
+    lockedAt: room.election.lockedAt || null,
+    electionSeed: room.election.seed || null,
+    results: room.election.results,
+    at: now()
+  });
+
+  sendRoomUpdate(room);
+}
+
+function startCoalitionPhase(ws) {
+  const room = getRoomBySocket(ws);
+  const ctx = getSocketContext(ws);
+  if (!room || room.state !== 'election') {
+    safeSend(ws, { type: 'error', code: 'election_not_active', message: 'Election phase is not active.' });
+    return;
+  }
+
+  const owner = room.ownerPlayerId ? findPlayer(room, room.ownerPlayerId) : null;
+  const ownerAvailable = !!(owner && owner.connected);
+  if (!ctx.playerId || (room.ownerPlayerId !== ctx.playerId && ownerAvailable)) {
+    safeSend(ws, { type: 'error', code: 'not_room_owner', message: 'Only host can start coalition phase.' });
+    return;
+  }
+
+  if (!ownerAvailable && room.ownerPlayerId !== ctx.playerId) {
+    room.ownerPlayerId = ctx.playerId;
+  }
+
+  if (!room.election || !room.election.results) {
+    safeSend(ws, { type: 'error', code: 'election_results_missing', message: 'Election results are not locked yet.' });
+    return;
+  }
+
+  room.state = 'coalition';
+  room.lastActivityAt = now();
 
   broadcastRoom(room, {
     type: 'coalition_started',
@@ -1071,6 +1270,14 @@ wss.on('connection', (ws) => {
       }
       case 'campaign_action': {
         applyCampaignAction(ws, msg);
+        break;
+      }
+      case 'election_results_submit': {
+        submitElectionResults(ws, msg);
+        break;
+      }
+      case 'start_coalition_phase': {
+        startCoalitionPhase(ws);
         break;
       }
       case 'heartbeat': {
