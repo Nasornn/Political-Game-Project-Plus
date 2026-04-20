@@ -2067,7 +2067,7 @@ window.Game.App = {
             },
             partyOverrides: [
                 {
-                    id: 'progressive',
+                    id: 'forwardfuture',
                     basePopularity: 34,
                     regionalPopMod: {
                         Bangkok: 18,
@@ -2075,7 +2075,7 @@ window.Game.App = {
                     }
                 },
                 {
-                    id: 'pheuthai',
+                    id: 'konthai',
                     basePopularity: 18,
                     greyMoney: 130
                 }

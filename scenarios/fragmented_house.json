@@ -9,22 +9,22 @@
   },
   "partyOverrides": [
     {
-      "id": "progressive",
+      "id": "forwardfuture",
       "basePopularity": 12,
       "politicalCapital": 180
     },
     {
-      "id": "pheuthai",
+      "id": "konthai",
       "basePopularity": 12,
       "politicalCapital": 180
     },
     {
-      "id": "bhumjaithai",
+      "id": "bhumpoom",
       "basePopularity": 12,
       "politicalCapital": 180
     },
     {
-      "id": "unitedthai",
+      "id": "unitedthais",
       "basePopularity": 12,
       "politicalCapital": 180
     }

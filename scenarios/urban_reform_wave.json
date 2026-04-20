@@ -9,7 +9,7 @@
   },
   "partyOverrides": [
     {
-      "id": "progressive",
+      "id": "forwardfuture",
       "basePopularity": 36,
       "politicalCapital": 240,
       "regionalPopMod": {
@@ -19,7 +19,7 @@
       }
     },
     {
-      "id": "pheuthai",
+      "id": "konthai",
       "basePopularity": 17,
       "greyMoney": 120,
       "regionalPopMod": {
@@ -28,7 +28,7 @@
       }
     },
     {
-      "id": "unitedthai",
+      "id": "unitedthais",
       "basePopularity": 9,
       "regionalPopMod": {
         "Bangkok": 2,

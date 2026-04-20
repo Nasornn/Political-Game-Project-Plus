@@ -4,61 +4,61 @@
 	"baseMode": "realistic",
 	"partyOverrides": [
 		{
-			"id": "progressive",
+			"id": "forwardfuture",
 			"name": "Forward Future",
 			"thaiName": "อนาคตใหม่มุ่งหน้า",
 			"shortName": "FF"
 		},
 		{
-			"id": "pheuthai",
-			"name": "Pheu Chart",
-			"thaiName": "เพื่อชาติไทย",
+			"id": "konthai",
+			"name": "Kon Thai",
+			"thaiName": "คนไทย",
 			"shortName": "PCT"
 		},
 		{
-			"id": "bhumjaithai",
+			"id": "bhumpoom",
 			"name": "Bhum Poom",
 			"thaiName": "ภูมิพลัง",
 			"shortName": "BPP"
 		},
 		{
-			"id": "unitedthai",
+			"id": "unitedthais",
 			"name": "United Thais",
 			"thaiName": "รวมใจชน",
 			"shortName": "UT"
 		},
 		{
-			"id": "palangpracharath",
+			"id": "palangpracha",
 			"name": "Palang Pracha",
 			"thaiName": "พลังรัฐ",
 			"shortName": "PP"
 		},
 		{
-			"id": "klatham",
+			"id": "klathai",
 			"name": "Kla Thai",
 			"thaiName": "กล้าชน",
 			"shortName": "KT"
 		},
 		{
-			"id": "democrat",
+			"id": "democracyalliance",
 			"name": "Democracy Alliance",
 			"thaiName": "พันธมิตรประชาธิปไตย",
 			"shortName": "DA"
 		},
 		{
-			"id": "setthakit",
+			"id": "wealthparty",
 			"name": "Wealth Party",
 			"thaiName": "พรรคมั่งคั่ง",
 			"shortName": "WTH"
 		},
 		{
-			"id": "prachachat",
+			"id": "prachaparty",
 			"name": "Pracha Party",
 			"thaiName": "พรรคปวงชน",
 			"shortName": "PRC"
 		},
 		{
-			"id": "thaisangthai",
+			"id": "thaibuild",
 			"name": "Thai Build",
 			"thaiName": "ไทยสร้างสรรค์",
 			"shortName": "TB"

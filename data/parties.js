@@ -15,10 +15,10 @@ window.Game.Data = window.Game.Data || {};
 
 window.Game.Data.PARTIES = [
     {
-        id: "progressive",
-        name: "Progressive Future",
-        thaiName: "ก้าวไกล",
-        shortName: "PF",
+        id: "forwardfuture",
+        name: "Forward Future",
+        thaiName: "อนาคตใหม่มุ่งหน้า",
+        shortName: "FF",
         hexColor: "#FF6B00",
         basePopularity: 30, // High national pop, but...
         banYaiPower: 0,     // Zero banYai outside Bangkok
@@ -47,10 +47,10 @@ window.Game.Data.PARTIES = [
         isPlayerSelectable: true
     },
     {
-        id: "pheuthai",
-        name: "Pheu Thai",
-        thaiName: "เพื่อไทย",
-        shortName: "PT",
+        id: "konthai",
+        name: "Kon Thai",
+        thaiName: "คนไทย",
+        shortName: "PCT",
         hexColor: "#DC2626",
         basePopularity: 16,
         banYaiPower: 45,   // Medium banYai
@@ -83,10 +83,10 @@ window.Game.Data.PARTIES = [
         isPlayerSelectable: true
     },
     {
-        id: "bhumjaithai",
-        name: "Bhumjaithai",
-        thaiName: "ภูมิใจไทย",
-        shortName: "BJT",
+        id: "bhumpoom",
+        name: "Bhum Poom",
+        thaiName: "ภูมิพลัง",
+        shortName: "BPP",
         hexColor: "#2563EB",
         basePopularity: 12,
         banYaiPower: 40,   // Moderate base banYai — real strength is provincial
@@ -133,10 +133,10 @@ window.Game.Data.PARTIES = [
         isPlayerSelectable: true
     },
     {
-        id: "unitedthai",
-        name: "United Thai Nation",
-        thaiName: "รวมไทยสร้างชาติ",
-        shortName: "UTN",
+        id: "unitedthais",
+        name: "United Thais",
+        thaiName: "รวมใจชน",
+        shortName: "UT",
         hexColor: "#1E3A8A",
         basePopularity: 10,       // Adjusted: NOT more than 10%
         banYaiPower: 40,          // Medium — LOWER than Bhumjaithai
@@ -166,10 +166,10 @@ window.Game.Data.PARTIES = [
         isPlayerSelectable: true
     },
     {
-        id: "palangpracharath",
-        name: "Palang Pracharath",
-        thaiName: "พลังประชารัฐ",
-        shortName: "PPRP",
+        id: "palangpracha",
+        name: "Palang Pracha",
+        thaiName: "พลังรัฐ",
+        shortName: "PP",
         hexColor: "#006536",
         basePopularity: 8,
         banYaiPower: 40,   // Medium banYai
@@ -203,9 +203,9 @@ window.Game.Data.PARTIES = [
         isPlayerSelectable: true
     },
     {
-        id: "klatham",
-        name: "Kla Tham",
-        thaiName: "กล้าธรรม",
+        id: "klathai",
+        name: "Kla Thai",
+        thaiName: "กล้าชน",
         shortName: "KT",
         hexColor: "#4EC86F",
         basePopularity: 10,
@@ -244,10 +244,10 @@ window.Game.Data.PARTIES = [
         isPlayerSelectable: true
     },
     {
-        id: "democrat",
-        name: "Democrat",
-        thaiName: "ประชาธิปัตย์",
-        shortName: "DEM",
+        id: "democracyalliance",
+        name: "Democracy Alliance",
+        thaiName: "พันธมิตรประชาธิปไตย",
+        shortName: "DA",
         hexColor: "#15A5F5",
         basePopularity: 6,
         banYaiPower: 0,    // Zero base banYai...
@@ -283,10 +283,10 @@ window.Game.Data.PARTIES = [
         isPlayerSelectable: true
     },
     {
-        id: "setthakit",
-        name: "Economics Party",
-        thaiName: "พรรคเศรษฐกิจ",
-        shortName: "ECN",
+        id: "wealthparty",
+        name: "Wealth Party",
+        thaiName: "พรรคมั่งคั่ง",
+        shortName: "WTH",
         hexColor: "#FEBD00",
         basePopularity: 3,
         banYaiPower: 0,    // No banYai at all
@@ -308,10 +308,10 @@ window.Game.Data.PARTIES = [
         isPlayerSelectable: true
     },
     {
-        id: "prachachat",
-        name: "Prachachat",
-        thaiName: "ประชาชาติ",
-        shortName: "PCC",
+        id: "prachaparty",
+        name: "Pracha Party",
+        thaiName: "พรรคปวงชน",
+        shortName: "PRC",
         hexColor: "#BA810D",
         basePopularity: 2,     // Very low national popularity
         banYaiPower: 0,        // No banYai outside deep south
@@ -347,10 +347,10 @@ window.Game.Data.PARTIES = [
         isPlayerSelectable: true
     },
     {
-        id: "thaisangthai",
-        name: "Thai Sang Thai",
-        thaiName: "ไทยสร้างไทย",
-        shortName: "TST",
+        id: "thaibuild",
+        name: "Thai Build",
+        thaiName: "ไทยสร้างสรรค์",
+        shortName: "TB",
         hexColor: "#6841D0",
         basePopularity: 3,
         banYaiPower: 0,

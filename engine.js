@@ -300,16 +300,16 @@ window.Game.Engine.Campaign = {
     },
 
     AI_PROFILES: {
-        progressive: { aggressive: true, shadowy: false, grassroots: true },
-        pheuthai: { aggressive: false, shadowy: true, grassroots: true },
-        bhumjaithai: { aggressive: true, shadowy: true, grassroots: true },
-        unitedthai: { aggressive: true, shadowy: true, grassroots: false },
-        palangpracharath: { aggressive: true, shadowy: true, grassroots: false },
-        klatham: { aggressive: false, shadowy: true, grassroots: true },
-        democrat: { aggressive: false, shadowy: false, grassroots: true },
-        setthakit: { aggressive: false, shadowy: false, grassroots: false },
-        prachachat: { aggressive: false, shadowy: true, grassroots: true },
-        thaisangthai: { aggressive: false, shadowy: false, grassroots: true }
+        forwardfuture: { aggressive: true, shadowy: false, grassroots: true },
+        konthai: { aggressive: false, shadowy: true, grassroots: true },
+        bhumpoom: { aggressive: true, shadowy: true, grassroots: true },
+        unitedthais: { aggressive: true, shadowy: true, grassroots: false },
+        palangpracha: { aggressive: true, shadowy: true, grassroots: false },
+        klathai: { aggressive: false, shadowy: true, grassroots: true },
+        democracyalliance: { aggressive: false, shadowy: false, grassroots: true },
+        wealthparty: { aggressive: false, shadowy: false, grassroots: false },
+        prachaparty: { aggressive: false, shadowy: true, grassroots: true },
+        thaibuild: { aggressive: false, shadowy: false, grassroots: true }
     },
 
     EVENT_TEMPLATES: [
@@ -638,7 +638,7 @@ window.Game.Engine.Campaign = {
     _addCampaignBuff(district, partyId, delta) {
         // Bangkok naturally leans progressive; non-progressive campaign boosts convert less efficiently there.
         if (district.region === 'Bangkok' && Number.isFinite(delta) && delta > 0) {
-            if (partyId === 'progressive') {
+            if (partyId === 'forwardfuture') {
                 delta = delta + 0.3;
             } else {
                 delta = delta * 0.72;
@@ -753,9 +753,9 @@ window.Game.Engine.Campaign = {
         if (district.region === 'Bangkok') {
             const ideology = Number.isFinite(party.ideology) ? party.ideology : 50;
             score += Math.max(-2, Math.min(2, (45 - ideology) / 20));
-            if (party.id === 'progressive') score += 2;
-            if (party.id === 'unitedthai') score -= 1.5;
-            if (party.id === 'setthakit') score -= 2;
+            if (party.id === 'forwardfuture') score += 2;
+            if (party.id === 'unitedthais') score -= 1.5;
+            if (party.id === 'wealthparty') score -= 2;
         }
         score += (district.localLeanings[party.id] || 0);
         score += (district.campaignBuff[party.id] || 0);

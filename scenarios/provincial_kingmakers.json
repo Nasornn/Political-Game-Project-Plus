@@ -9,7 +9,7 @@
   },
   "partyOverrides": [
     {
-      "id": "bhumjaithai",
+      "id": "bhumpoom",
       "basePopularity": 14,
       "banYaiPower": 55,
       "regionalBanYai": {
@@ -19,7 +19,7 @@
       }
     },
     {
-      "id": "palangpracharath",
+      "id": "palangpracha",
       "basePopularity": 9,
       "banYaiPower": 50,
       "regionalBanYai": {
@@ -29,7 +29,7 @@
       }
     },
     {
-      "id": "klatham",
+      "id": "klathai",
       "basePopularity": 11,
       "banYaiPower": 48,
       "regionalBanYai": {
@@ -38,7 +38,7 @@
       }
     },
     {
-      "id": "democrat",
+      "id": "democracyalliance",
       "basePopularity": 7,
       "regionalBanYai": {
         "South": 82
