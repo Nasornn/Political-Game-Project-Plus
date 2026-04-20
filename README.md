@@ -1,8 +1,14 @@
-# Thai Political Simulator
+# 🏛️ Thai Political Simulator
 
-**Experience the high-stakes world of Thai politics. Build coalition governments, master shadow politics, and navigate the delicate balance of power.**
+*Master the art of Thai politics. Campaign, negotiate, govern, and survive.*
 
-## ▶️ [Play Now – No Install Required](https://thaipolsim.app/)
+> **🗳️ 500-seat election | 🤝 Live multiplayer | 🕵️ Shadow politics | 💼 Full 4-year terms**
+
+## ▶️ **[PLAY NOW – Browser, No Install](https://thaipolsim.app/)** 🚀
+
+---
+
+**Experience the high-stakes world of Thai politics.** Build coalition governments, master shadow politics, and navigate the delicate balance of power. Will you rule all of Thailand, or will you fall to scandal, defection, and Election Commission investigation?
 
 ---
 
