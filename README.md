@@ -1,22 +1,172 @@
-# Political-Game-Project
-Political Game Project
-Political Game Project is a browser-based Thailand election and parliament strategy simulator. Players choose from 8 Thai political parties (or create their own) and compete in a fully simulated 500-seat national election, then govern through a 4-year parliamentary term.
+# Thai Political Simulator
 
-Gameplay Overview
-The game progresses through five distinct phases:
+**Experience the high-stakes world of Thai politics. Build coalition governments, master shadow politics, and navigate the delicate balance of power.**
 
-Setup – Select a party with unique ideologies, regional strengths, and military influence ("BanYai") ratings.
-Campaign – Spend action points across Thailand's 7 regions over 5 turns. Counter rivals with disinformation campaigns (IO operations), manage your scandal meter, and strategize on the interactive D3-powered Thailand map.
-Election – A complex algorithm resolves all 400 constituency seats (first-past-the-post) and 100 party-list seats (proportional representation), factoring in base popularity, regional bonuses, candidate appeal, campaign buffs, and corruption debuffs.
-Coalition – Negotiate with other parties to form a government with 251+ seats. Allocate ministries to coalition partners.
-Parliament – Govern for 4 years. Vote on 15 bills (land reform, military budget, marriage equality, welfare, etc.), manage 500 individually simulated MPs with loyalty, ideology, and corruption attributes, and engage in shadow politics — bribe rival MPs into becoming "Cobras" (defectors), siphon funds into grey money, or risk EC investigation and party dissolution.
-Key Features
-🗺️ Interactive Thailand map with district-level visualization (D3.js + TopoJSON)
-🧠 AI-driven rival parties that campaign and react to player actions
-🏛️ 500 simulated MPs with unique personality traits (loyalty, ideology, corruption)
-🎭 Shadow politics system — corruption, bribery, disinformation, and scandal risk
-🌐 Bilingual UI — Thai (ไทย) and English
-📊 Deep election simulation — multi-factor scoring per district
+## ▶️ [Play Now – No Install Required](https://thaipolsim.app/)
+
+---
+
+## What Is This?
+
+Thai Political Simulator is an immersive, browser-based strategy game where you take the helm of a Thai political party. Run for national election, form coalition governments, pass controversial legislation, and survive parliamentary intrigue—all with hundreds of individually simulated politicians with their own loyalties, corruptions, and agendas.
+
+**From election strategy to backroom dealing**, every decision impacts your fate. Will you rule for all of Thailand, or will you fall to scandal, defection, and EC investigation?
+
+### Why Players Love It
+- 🗳️ **Realistic election mechanics** – 500 seats (400 constituency + 100 party-list), multiple scoring factors per district
+- 🤝 **Coalition negotiations** – Form governments with strategic allies; allocate ministries to keep partners loyal
+- 🏛️ **Deep parliament simulation** – 500 MPs with unique personalities, loyalty ratings, and corruption vulnerability
+- 🕵️ **Shadow politics** – Bribe defectors into your party ("Cobras"), siphon grey money, or risk dissolution by the Election Commission
+- 🗺️ **Interactive Thailand map** – Campaign across 7 regions, visualize your party's strength in real-time
+- 🌐 **Bilingual UI** – Play in Thai (ไทย) or English
+- 🧠 **Intelligent rivals** – AI parties adapt, campaign, and react to your moves
+
+---
+
+## Gameplay Flow
+
+**Setup** → Choose or design a party | **Campaign** → Compete for votes across Thailand | **Election** → Face the results | **Coalition** → Forge a government | **Parliament** → Govern for 4 years and survive
+
+---
+
+## The Five Phases of Power
+
+The game progresses through five immersive phases, each with unique challenges and strategies.
+
+### 🎯 Phase 1: Setup
+Choose your faction from 10 Thai parties (or create a custom party). Each party has:
+- **Unique ideology** (progressive ↔ conservative, 0–100 scale)
+- **Regional strongholds** – regional popularity bonuses across Thailand's 7 zones
+- **BanYai power** – military/provincial influence that drives votes in specific regions
+- **Starting resources** – political capital, grey money for shadow ops, and scandal risk level
+
+### 🗺️ Phase 2: Campaign (5 turns)
+Compete for voter hearts across 7 regions using limited action points. Every turn you can:
+- **Direct campaign** – boost popularity in target districts (costs AP)
+- **Information operations (IO)** – launch disinformation against rivals; risk scandal if caught
+- **Candidate tours** – increase local MP appeal and grassroots momentum
+- **Regional rallies** – build party energy and mobilize the base
+- **Monitor rival moves** – watch AI parties counter your strategies in real-time on the interactive D3-powered map
+
+Manage your **scandal meter** (0–100); too high and the Election Commission investigates.
+
+### 🗳️ Phase 3: Election (Deterministic)
+A sophisticated multi-factor algorithm runs **500 seats**:
+- **400 constituency seats** (first-past-the-post): Winner-take-all per district
+  - Factors: base popularity, regional bonuses, candidate local appeal, campaign buffs, IO damage
+- **100 party-list seats** (proportional representation): National popular vote redistribution
+- Result: Full seat distribution across all 10 parties
+
+Victory comes from **250+ seats** to form government (or become opposition).
+
+### 🤝 Phase 4: Coalition (1–3 rounds)
+Now the real negotiation begins. You must form a government with 251+ seats by:
+- **Negotiating with AI parties** – each has demands (ministries, budget allocations, policy concessions)
+- **Allocating ministries** – distribute 15+ cabinet posts to keep coalition partners happy
+- **Managing tensions** – coalition members may defect if demands aren't met
+- **Lobbying key MPs** – use lobby actions like Quid Pro Quo and Whip to secure support
+
+If coalition talks fail, you become **opposition** and focus on counter-strategies.
+
+### 🏛️ Phase 5: Parliament (4 Years = 16 Sessions)
+Govern through 16 parliamentary sessions (each = 3 phases: Question Time, Legislative, Adjournment).
+
+**As Governing Party:**
+- **Propose and vote on 15+ bills** – land reform, military budget, marriage equality, welfare expansion, etc.
+- **Manage 500 MPs individually**:
+  - Each MP has loyalty to party, ideology, corruption level, and local popularity
+  - Can defect if scandalized or swayed by opposition bribery
+  - Coalition MPs may rebel if overlooked or mistreated
+- **Shadow politics**:
+  - **Bribe defectors** ("Cobras") to switch sides using grey money
+  - **Blackmail high-corruption MPs** to lock down votes
+  - **Navigate no-confidence motions** – survive coalition unrest and opposition challenges
+  - **Dodge EC investigation** – scandal and corruption risk dissolution
+- **Manage treasury**:
+  - Spend political capital on bills and lobbying
+  - Siphon grey money for shadow ops (but risk exposure)
+  - Balance budget with coalition expectations
+
+**As Opposition Party:**
+- **Queue bills for debate** – force governing party to defend weak legislation
+- **Launch opposition tactics**:
+  - Table counter-motions, run media rebuttals, organize whip operations
+  - Pressure the government on scandals and budget overruns
+- **Build toward next election** – gain popularity by exposing corruption and failed policies
+
+**Multiplayer Parliament:**
+- If playing multiplayer, governing players **share a bill-passing cap** – cooperation required
+- Opposition syncs across human players – coordinate counter-tactics in real-time
+
+---
+
+## Complete Feature List
+
+### Core Systems
+🗺️ **Interactive Thailand Map** – D3.js + TopoJSON district-level visualization; watch campaign strength in real-time  
+🧠 **AI Rival Parties** – Each with unique campaign strategies, negotiation styles, and behavior profiles  
+🏛️ **500 Individually Simulated MPs** – Each has loyalty, ideology (0–100 scale), corruption (0–100), local popularity, and defection risk  
+🎭 **Shadow Politics System**:
+   - Bribery (grey money → defectors/"Cobras")
+   - Disinformation campaigns (IO operations)
+   - Scandal meter & Election Commission investigations
+   - Corruption exploitation & blackmail
+   - Quid Pro Quo, Whip operations, and media rebuttals
+
+### Campaign & Election
+📊 **Deep Election Simulation** – Multi-factor district scoring:
+   - Base popularity, regional modifiers, candidate appeal, BanYai military influence
+   - Campaign buffs & IO debuffs, local leanings, volatility
+📈 **BanYai System** – Regional and provincial military influence; province-level overrides regional  
+🎯 **Scandal Meter** – Track IO operation risk; high scandal triggers EC investigation  
+⚡ **Momentum & Event Triggers** – Random events during campaign; AI reacts dynamically
+
+### Coalition & Parliament
+🤝 **Coalition Negotiation** – Form governments with 251+ seats; negotiate demands, allocate ministries  
+💼 **Ministry System** – 15+ cabinet posts; distribute to coalition partners to maintain loyalty  
+📋 **Coalition Demands & Events** – Partners make demands (treasury, policy, reshuffles); handle via crisis resolution or party collapse  
+🏴 **No-Confidence Motions** – Opposition can trigger; survive by keeping majority coalition unity  
+📜 **Government Bill Voting** – Pass controversial bills; each has regional and capital effects, scandal risk  
+🔒 **MP Personality & Corruption** – Control through loyalty, ideology alignment, or bribery; high-corruption MPs are vulnerable targets  
+💬 **Parliamentary Phases** – Question Time (opposition grills), Legislative (bills), Adjournment (damage control)  
+🚪 **Defection & "Cobras"** – Permanently bribe opposition MPs; risky if discovered  
+🔄 **Government Crises** – Multi-step chain events (scandal spikes, coalition breakdowns); resolve via spending or risk collapse
+
+### Difficulty & Scenario
+⚙️ **3 Difficulty Modes**:
+   - **Newcomer** – Extra AP, calmer AI, friendly events; learn the mechanics
+   - **War Room Strategist** – Balanced; smart rivals and tight resource play
+   - **Political Master** – Hard; aggressive AI, harsh events, punishing penalties
+📍 **3 Scenario Modes**:
+   - **Realistic** – Current party strengths (as of 2024 Thai politics)
+   - **Balanced** – Normalized race; every party has a fair shot
+   - **Custom** – JSON scenario editor; create your own rulesets & party balancing
+🎪 **Emergent Parties** – Random new factions appear mid-campaign to shake things up
+
+### Modding & Customization
+🛠️ **Scenario Modding** – Full JSON-based scenario editor:
+   - Override party popularity, ideology, BanYai, campaign AP, bill templates
+   - Create custom parties with unique colors, regions, and strategies
+   - Load/save to local browser storage or scenario packs
+📦 **Scenario Packs** – Distribute reusable scenario mods as JSON files; index via `scenarios/index.json`
+
+### Multiplayer
+🌐 **Live Multiplayer (2–4 players)**:
+   - WebSocket-based server (Node.js backend)
+   - Private room codes or public matchmaking queue
+   - Campaign barrier: all players must finish 8 turns before coalition phase
+   - Realtime coalition offers & rejections between human players
+   - Shared government bill-passing cap (governing players collaborate on legislation)
+   - Live chat during campaign & parliament phases
+   - Automatic player reconnect on disconnect; auto-complete no-shows after timeout
+💬 **In-Game Messaging** – Chat during campaign and parliament phases; coordinate tactics
+
+### Quality-of-Life
+💾 **Save/Load System** – 3 save slots; resume anytime during your run  
+🏝️ **Sandbox Mode** – Experiment with custom scenarios or mess around without consequences  
+🕹️ **Cheat Commands** – Testing & speedrun tools (capital, grey money, state jumps, etc.)  
+🌐 **Bilingual UI** – Full Thai (ไทย) + English support  
+🎨 **Dark Political Theme** – Gold accents, clean typography, accessibility-focused design
 Tech Stack
 Vanilla JavaScript (OOP, window.Game.* module pattern)
 D3.js v7 + TopoJSON for map rendering
