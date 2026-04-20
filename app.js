@@ -2067,7 +2067,7 @@ window.Game.App = {
             },
             partyOverrides: [
                 {
-                    id: 'forwardfuture',
+                    id: 'aheadfuture',
                     basePopularity: 34,
                     regionalPopMod: {
                         Bangkok: 18,

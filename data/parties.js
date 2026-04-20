@@ -15,8 +15,8 @@ window.Game.Data = window.Game.Data || {};
 
 window.Game.Data.PARTIES = [
     {
-        id: "forwardfuture",
-        name: "Forward Future",
+        id: "aheadfuture",
+        name: "Ahead Future",
         thaiName: "อนาคตใหม่มุ่งหน้า",
         shortName: "FF",
         hexColor: "#FF6B00",
@@ -166,9 +166,9 @@ window.Game.Data.PARTIES = [
         isPlayerSelectable: true
     },
     {
-        id: "palangpracha",
-        name: "Palang Pracha",
-        thaiName: "พลังรัฐ",
+        id: "prachapower",
+        name: "Pracha Power",
+        thaiName: "พลังแห่งรัฐ",
         shortName: "PP",
         hexColor: "#006536",
         basePopularity: 8,
@@ -310,7 +310,7 @@ window.Game.Data.PARTIES = [
     {
         id: "prachaparty",
         name: "Pracha Party",
-        thaiName: "พรรคปวงชน",
+        thaiName: "พรรคปวงคน",
         shortName: "PRC",
         hexColor: "#BA810D",
         basePopularity: 2,     // Very low national popularity
@@ -348,7 +348,7 @@ window.Game.Data.PARTIES = [
     },
     {
         id: "thaibuild",
-        name: "Thai Build",
+        name: "Thai Create",
         thaiName: "ไทยสร้างสรรค์",
         shortName: "TB",
         hexColor: "#6841D0",

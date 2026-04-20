@@ -9,7 +9,7 @@
   },
   "partyOverrides": [
     {
-      "id": "forwardfuture",
+      "id": "aheadfuture",
       "basePopularity": 36,
       "politicalCapital": 240,
       "regionalPopMod": {

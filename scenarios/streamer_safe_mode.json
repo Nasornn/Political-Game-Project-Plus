@@ -4,8 +4,8 @@
 	"baseMode": "realistic",
 	"partyOverrides": [
 		{
-			"id": "forwardfuture",
-			"name": "Forward Future",
+			"id": "aheadfuture",
+			"name": "Ahead Future",
 			"thaiName": "อนาคตใหม่มุ่งหน้า",
 			"shortName": "FF"
 		},
@@ -28,9 +28,9 @@
 			"shortName": "UT"
 		},
 		{
-			"id": "palangpracha",
-			"name": "Palang Pracha",
-			"thaiName": "พลังรัฐ",
+			"id": "prachapower",
+			"name": "Pracha Power",
+			"thaiName": "พลังแห่งรัฐ",
 			"shortName": "PP"
 		},
 		{
@@ -54,12 +54,12 @@
 		{
 			"id": "prachaparty",
 			"name": "Pracha Party",
-			"thaiName": "พรรคปวงชน",
+			"thaiName": "พรรคปวงคน",
 			"shortName": "PRC"
 		},
 		{
 			"id": "thaibuild",
-			"name": "Thai Build",
+			"name": "Thai Create",
 			"thaiName": "ไทยสร้างสรรค์",
 			"shortName": "TB"
 		}
