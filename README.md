@@ -215,21 +215,7 @@ Notes
 - Quick Apply only works from Setup screen.
 - If pack loading fails when opening index.html directly, run the project from a local server so JSON fetch works.
 
-Cheat Commands (Testing)
-Use browser DevTools console:
 
-1. `window.Game.Cheat.help()` to list commands.
-2. `window.Game.Cheat.run("<command>")` to execute.
-
-Common examples
-- `window.Game.Cheat.run("capital 500")`
-- `window.Game.Cheat.run("grey 300")`
-- `window.Game.Cheat.run("state parliament")`
-- `window.Game.Cheat.run("role opposition")`
-- `window.Game.Cheat.run("queuebills 2")`
-- `window.Game.Cheat.run("walkout 25")`
-- `window.Game.Cheat.run("split bhumjaithai 18")`
-- `window.Game.Cheat.run("vote oppose")`
 
 Supported JSON fields
 - name: string
@@ -284,29 +270,42 @@ Minimal example
 	]
 }
 
-Multiplayer (Implementation Started)
-This project now includes an initial multiplayer stack for live FFA sessions with an 8-turn campaign barrier.
+## Multiplayer
 
-What is implemented
-- Node.js WebSocket backend scaffold in multiplayer-server/
-- Private room code hosting and joining
-- Public matchmaking queue (2-4 players)
-- Ready check + host-controlled match start
-- Room-level party selection phase (unique party lock per player)
-- Campaign room chatbox during live play
-- Campaign progress tracking per player (0-8)
-- Waiting-room behavior for players who finish campaign early
-- Barrier trigger: coalition phase starts only when all players reach 8/8
-- Realtime coalition offer/accept/reject flow for human-controlled parties
-- Shared government bill-cap sync across governing players (multiplayer parliament)
-- Deterministic action order index for concurrent campaign action events
+Play against real players (2–4 players per room).
 
-Run multiplayer server
-1. cd multiplayer-server
-2. npm install
-3. npm start
+### Quick Start (Copy-Paste)
 
-Default endpoint is ws://localhost:8787.
+**Host:**
+1. Click `🌐 Multiplayer` in top toolbar
+2. Click `Host Room`
+3. Copy the join code
+4. Share with friends
+
+**Players:**
+1. Click `🌐 Multiplayer` in top toolbar
+2. Paste the join code
+3. Click `Join`
+4. Click `Ready`
+
+**Host starts match:** Click `Start Match` (all players must be ready first)
+
+**Then:**
+- Each player picks a unique party
+- Play campaign (8 turns each, independent)
+- All players wait if they finish early
+- Coalition phase starts when everyone is done
+- Realtime offers/rejections with other players
+- Parliament: vote on bills together
+
+---
+
+### For Developers: Run Backend Locally
+
+```bash
+cd multiplayer-server
+npm install
+npm start
 
 Client controls
 - Click the Multiplayer button in the top toolbar.
