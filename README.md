@@ -138,7 +138,7 @@ Govern through 16 parliamentary sessions (each = 3 phases: Question Time, Legisl
    - **War Room Strategist** – Balanced; smart rivals and tight resource play
    - **Political Master** – Hard; aggressive AI, harsh events, punishing penalties
 📍 **3 Scenario Modes**:
-   - **Realistic** – Current party strengths (as of 2024 Thai politics)
+   - **Realistic** – Based on the popularity of different political ideologies in Thailand (for example, progressive ideas are more popular in Bangkok).
    - **Balanced** – Normalized race; every party has a fair shot
    - **Custom** – JSON scenario editor; create your own rulesets & party balancing
 🎪 **Emergent Parties** – Random new factions appear mid-campaign to shake things up
