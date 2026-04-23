@@ -4,21 +4,42 @@
 window.Game = window.Game || {};
 window.Game.Models = {};
 
+function _resolveRoll(rollFn) {
+  return (typeof rollFn === 'function') ? rollFn : Math.random;
+}
+
+function _toFiniteInt(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return null;
+  return Math.max(0, Math.floor(n));
+}
+
 // ─── MP (Member of Parliament) ───────────────────────────────
 let mpIdCounter = 0;
 class MP {
     constructor(opts) {
-        this.id = opts.id || (++mpIdCounter);
+  opts = opts || {};
+  const roll = _resolveRoll(opts.rollFn);
+    const explicitId = (opts && Object.prototype.hasOwnProperty.call(opts, 'id')) ? opts.id : null;
+    const numericId = _toFiniteInt(explicitId);
+    if (numericId !== null) {
+      this.id = numericId;
+      mpIdCounter = Math.max(mpIdCounter, numericId);
+    } else if (explicitId !== null && explicitId !== undefined && String(explicitId).trim() !== '') {
+      this.id = explicitId;
+    } else {
+      this.id = (++mpIdCounter);
+    }
         this.name = opts.name;
         this.partyId = opts.partyId;
         this.ideology = opts.ideology;           // 0-100 scale
-        this.loyaltyToParty = opts.loyaltyToParty || 50 + Math.floor(Math.random() * 40); // 50-89
-        this.corruptionLevel = opts.corruptionLevel || Math.floor(Math.random() * 60);      // 0-59
+        this.loyaltyToParty = Number.isFinite(opts.loyaltyToParty) ? opts.loyaltyToParty : 50 + Math.floor(roll() * 40); // 50-89
+        this.corruptionLevel = Number.isFinite(opts.corruptionLevel) ? opts.corruptionLevel : Math.floor(roll() * 60);      // 0-59
         this.isBribedByPlayer = opts.isBribedByPlayer || false;
         this.isCobra = opts.isCobra || false;    // Permanent bribe (banana)
         this.districtId = opts.districtId || null;
         this.isPartyList = opts.isPartyList || false;
-        this.localPopularity = opts.localPopularity || Math.floor(Math.random() * 30);  // 0-29
+        this.localPopularity = Number.isFinite(opts.localPopularity) ? opts.localPopularity : Math.floor(roll() * 30);  // 0-29
         this.isSeated = false;  // Whether they won a seat
     }
 
@@ -27,9 +48,11 @@ class MP {
      * @param {Bill} bill - The bill being voted on
      * @param {string} partyLeaderPosition - 'aye' or 'nay' from party leader
      * @param {string} playerPosition - 'aye' or 'nay' — player's desired outcome
+     * @param {Function} rollFn - Optional deterministic random function
      * @returns {'aye'|'nay'|'abstain'}
      */
-    voteLogic(bill, partyLeaderPosition, playerPosition) {
+    voteLogic(bill, partyLeaderPosition, playerPosition, rollFn) {
+      const roll = _resolveRoll(rollFn);
         // Cobras ALWAYS vote with the player
         if (this.isCobra || this.isBribedByPlayer) {
             return playerPosition;
@@ -42,7 +65,7 @@ class MP {
 
         // Low loyalty → vote personal ideology
         if (this.loyaltyToParty < 40) {
-            return this._ideologyVote(bill);
+          return this._ideologyVote(bill, roll);
         }
 
         // Middle ground (40-70 loyalty): weighted chance
@@ -56,19 +79,20 @@ class MP {
         }
 
         // Weighted decision
-        const roll = Math.random();
-        if (roll < loyaltyWeight * 0.7) {
+        const randomValue = roll();
+        if (randomValue < loyaltyWeight * 0.7) {
             return partyLeaderPosition;
         }
-        return this._ideologyVote(bill);
+        return this._ideologyVote(bill, roll);
     }
 
-    _ideologyVote(bill) {
+      _ideologyVote(bill, rollFn) {
+        const roll = _resolveRoll(rollFn);
         // Bills with ideological position: lower = progressive, higher = conservative
         const dist = Math.abs(this.ideology - bill.ideologicalPosition);
         if (dist < 25) return 'aye';
         if (dist > 60) return 'nay';
-        return Math.random() > 0.5 ? 'aye' : 'nay';
+        return roll() > 0.5 ? 'aye' : 'nay';
     }
 
     _getIdeologyAlignment(bill) {
@@ -81,7 +105,17 @@ class MP {
 let districtIdCounter = 0;
 class District {
     constructor(opts) {
-        this.id = opts.id || (++districtIdCounter);
+  opts = opts || {};
+    const explicitId = (opts && Object.prototype.hasOwnProperty.call(opts, 'id')) ? opts.id : null;
+    const numericId = _toFiniteInt(explicitId);
+    if (numericId !== null) {
+      this.id = numericId;
+      districtIdCounter = Math.max(districtIdCounter, numericId);
+    } else if (explicitId !== null && explicitId !== undefined && String(explicitId).trim() !== '') {
+      this.id = explicitId;
+    } else {
+      this.id = (++districtIdCounter);
+    }
         this.provinceName = opts.provinceName;
         this.seatIndex = opts.seatIndex;   // e.g., "Bangkok District 1"
         this.region = opts.region;
@@ -104,7 +138,17 @@ class District {
 let billIdCounter = 0;
 class Bill {
     constructor(opts) {
-        this.id = opts.id || (++billIdCounter);
+  opts = opts || {};
+    const explicitId = (opts && Object.prototype.hasOwnProperty.call(opts, 'id')) ? opts.id : null;
+    const numericId = _toFiniteInt(explicitId);
+    if (numericId !== null) {
+      this.id = numericId;
+      billIdCounter = Math.max(billIdCounter, numericId);
+    } else if (explicitId !== null && explicitId !== undefined && String(explicitId).trim() !== '') {
+      this.id = explicitId;
+    } else {
+      this.id = (++billIdCounter);
+    }
         this.name = opts.name;
         this.description = opts.description || '';
         this.type = opts.type || 'legislation'; // 'legislation', 'budget', 'constitutional', 'no_confidence'
@@ -124,6 +168,31 @@ class Bill {
 window.Game.Models.MP = MP;
 window.Game.Models.District = District;
 window.Game.Models.Bill = Bill;
+window.Game.Models.getCounters = function() {
+  return {
+    mp: mpIdCounter,
+    district: districtIdCounter,
+    bill: billIdCounter
+  };
+};
+window.Game.Models.setCounters = function(counters = {}) {
+  const mp = _toFiniteInt(counters.mp);
+  const district = _toFiniteInt(counters.district);
+  const bill = _toFiniteInt(counters.bill);
+  mpIdCounter = (mp === null) ? 0 : mp;
+  districtIdCounter = (district === null) ? 0 : district;
+  billIdCounter = (bill === null) ? 0 : bill;
+  return window.Game.Models.getCounters();
+};
+window.Game.Models.syncCounters = function(counters = {}) {
+  const mp = _toFiniteInt(counters.mp);
+  const district = _toFiniteInt(counters.district);
+  const bill = _toFiniteInt(counters.bill);
+  if (mp !== null) mpIdCounter = Math.max(mpIdCounter, mp);
+  if (district !== null) districtIdCounter = Math.max(districtIdCounter, district);
+  if (bill !== null) billIdCounter = Math.max(billIdCounter, bill);
+  return window.Game.Models.getCounters();
+};
 
 // ─── Predefined Bills ────────────────────────────────────────
 // Each bill has effects.popularityChanges (region→value), effects.capitalReward, effects.scandalChange

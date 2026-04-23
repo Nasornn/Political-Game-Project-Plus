@@ -4,6 +4,28 @@
 window.Game = window.Game || {};
 window.Game.Engine = {};
 
+function engineRoll(gameState) {
+    return (gameState && typeof gameState.random === 'function')
+        ? gameState.random()
+        : Math.random();
+}
+
+function engineInt(gameState, maxExclusive) {
+    const max = Math.max(1, Math.floor(Number(maxExclusive) || 1));
+    return Math.floor(engineRoll(gameState) * max);
+}
+
+function engineShuffle(gameState, list) {
+    const arr = Array.isArray(list) ? list.slice() : [];
+    for (let i = arr.length - 1; i > 0; i--) {
+        const j = engineInt(gameState, i + 1);
+        const tmp = arr[i];
+        arr[i] = arr[j];
+        arr[j] = tmp;
+    }
+    return arr;
+}
+
 // ─── ELECTION ENGINE ─────────────────────────────────────────
 window.Game.Engine.Election = {
 
@@ -169,11 +191,12 @@ window.Game.Engine.Election = {
         }
 
         // ── STEP 3: Largest Remainder Method ────────────────────
-        let remainingSeats = 100 - assignedListSeats;
+        const remainingSeats = Math.max(0, 100 - assignedListSeats);
         partyRemainders.sort((a, b) => b.remainder - a.remainder);
 
-        for (let i = 0; i < remainingSeats && partyRemainders.length > 0; i++) {
-            const pid = partyRemainders[i % partyRemainders.length].partyId;
+        const bonusSeatsToAssign = Math.min(remainingSeats, partyRemainders.length);
+        for (let i = 0; i < bonusSeatsToAssign; i++) {
+            const pid = partyRemainders[i].partyId;
             results.partyListSeats[pid]++;
             results.partyListDetail[pid].bonusSeats += 1;
         }
@@ -456,11 +479,50 @@ window.Game.Engine.Campaign = {
         if (!gameState.campaignMomentum) gameState.campaignMomentum = {};
         if (!gameState.campaignActionMemory) gameState.campaignActionMemory = {};
         if (!gameState.difficultyMode) gameState.difficultyMode = 'medium';
+        this._ensureDistrictIndexes(gameState);
         for (const p of gameState.parties) {
             if (!Number.isFinite(gameState.campaignMomentum[p.id])) {
                 gameState.campaignMomentum[p.id] = 0;
             }
         }
+    },
+
+    _roll(gameState) {
+        return engineRoll(gameState);
+    },
+
+    _ensureDistrictIndexes(gameState) {
+        if (!gameState) return;
+        const districts = Array.isArray(gameState.districts) ? gameState.districts : [];
+        const currentVersion = `${districts.length}:${districts[0] ? districts[0].id : 'none'}:${districts[districts.length - 1] ? districts[districts.length - 1].id : 'none'}`;
+        if (gameState._districtsByProvince && gameState._districtsByProvinceVersion === currentVersion) return;
+
+        const byProvince = {};
+        for (const district of districts) {
+            if (!district || !district.provinceName) continue;
+            if (!byProvince[district.provinceName]) byProvince[district.provinceName] = [];
+            byProvince[district.provinceName].push(district);
+        }
+
+        gameState._districtsByProvince = byProvince;
+        gameState._districtsByProvinceVersion = currentVersion;
+    },
+
+    _getProvinceDistricts(gameState, provinceName) {
+        this._ensureDistrictIndexes(gameState);
+        const map = gameState && gameState._districtsByProvince;
+        return (map && map[provinceName]) ? map[provinceName] : [];
+    },
+
+    _createAIScoreCache() {
+        return {
+            districtScores: Object.create(null),
+            districtMargins: Object.create(null),
+            battlegroundsByParty: Object.create(null),
+            pressureByParty: Object.create(null),
+            attackTargets: Object.create(null),
+            swingDistrictByParty: Object.create(null)
+        };
     },
 
     initializeAIPersonality(gameState) {
@@ -626,10 +688,8 @@ window.Game.Engine.Campaign = {
         for (const [region, swing] of Object.entries(regionSwing || {})) {
             const provinces = window.Game.Data.REGIONS[region] || [];
             for (const prov of provinces) {
-                for (const d of gameState.districts) {
-                    if (d.provinceName === prov) {
-                        this._addCampaignBuff(d, partyId, swing);
-                    }
+                for (const d of this._getProvinceDistricts(gameState, prov)) {
+                    this._addCampaignBuff(d, partyId, swing);
                 }
             }
         }
@@ -659,10 +719,8 @@ window.Game.Engine.Campaign = {
 
     _applyRally(gameState, partyId, provinceName, basePower = 3) {
         const calc = this._calculateActionPower(gameState, partyId, 'rally', provinceName, basePower);
-        for (const d of gameState.districts) {
-            if (d.provinceName === provinceName) {
-                this._addCampaignBuff(d, partyId, calc.power);
-            }
+        for (const d of this._getProvinceDistricts(gameState, provinceName)) {
+            this._addCampaignBuff(d, partyId, calc.power);
         }
         this._adjustMomentum(gameState, partyId, calc.power >= basePower ? 1 : 0);
         return calc;
@@ -670,10 +728,8 @@ window.Game.Engine.Campaign = {
 
     _applyAttack(gameState, attackerPartyId, targetPartyId, provinceName, basePower = 3) {
         const calc = this._calculateActionPower(gameState, attackerPartyId, 'attackAd', provinceName, basePower);
-        for (const d of gameState.districts) {
-            if (d.provinceName === provinceName) {
-                this._addIODebuff(d, targetPartyId, calc.power);
-            }
+        for (const d of this._getProvinceDistricts(gameState, provinceName)) {
+            this._addIODebuff(d, targetPartyId, calc.power);
         }
         this._adjustMomentum(gameState, attackerPartyId, 1);
         return calc;
@@ -696,10 +752,8 @@ window.Game.Engine.Campaign = {
         party.greyMoney -= greyCost;
         const scandalDelta = Math.max(1, Math.round(scandalCost * this._getScandalMultiplier(gameState, attackerPartyId)));
         party.scandalMeter = Math.min(100, party.scandalMeter + scandalDelta);
-        for (const d of gameState.districts) {
-            if (d.provinceName === provinceName) {
-                this._addIODebuff(d, targetPartyId, calc.power);
-            }
+        for (const d of this._getProvinceDistricts(gameState, provinceName)) {
+            this._addIODebuff(d, targetPartyId, calc.power);
         }
         this._adjustMomentum(gameState, attackerPartyId, 1);
         return calc;
@@ -713,18 +767,21 @@ window.Game.Engine.Campaign = {
         party.greyMoney -= greyCost;
         const scandalDelta = Math.max(1, Math.round(scandalCost * this._getScandalMultiplier(gameState, partyId)));
         party.scandalMeter = Math.min(100, party.scandalMeter + scandalDelta);
-        for (const d of gameState.districts) {
-            if (d.provinceName === provinceName) {
-                this._addCampaignBuff(d, partyId, calc.power);
-            }
+        for (const d of this._getProvinceDistricts(gameState, provinceName)) {
+            this._addCampaignBuff(d, partyId, calc.power);
         }
         this._adjustMomentum(gameState, partyId, 1);
         return calc;
     },
 
-    _pickAttackTargetParty(gameState, attackerPartyId, provinceName) {
+    _pickAttackTargetParty(gameState, attackerPartyId, provinceName, evalCache = null) {
         if (!provinceName) return gameState.playerPartyId;
-        const provinceDistricts = gameState.districts.filter(d => d.provinceName === provinceName);
+        const cacheKey = `${attackerPartyId}:${provinceName}`;
+        if (evalCache && evalCache.attackTargets && evalCache.attackTargets[cacheKey]) {
+            return evalCache.attackTargets[cacheKey];
+        }
+
+        const provinceDistricts = this._getProvinceDistricts(gameState, provinceName);
         if (provinceDistricts.length === 0) return gameState.playerPartyId;
 
         let best = null;
@@ -734,7 +791,7 @@ window.Game.Engine.Campaign = {
             if (p.id === attackerPartyId) continue;
             let total = 0;
             for (const d of provinceDistricts) {
-                total += this._estimateDistrictScore(gameState, d, p);
+                total += this._estimateDistrictScore(gameState, d, p, evalCache);
             }
             if (total > bestScore) {
                 bestScore = total;
@@ -742,10 +799,17 @@ window.Game.Engine.Campaign = {
             }
         }
 
-        return best || gameState.playerPartyId;
+        const picked = best || gameState.playerPartyId;
+        if (evalCache && evalCache.attackTargets) evalCache.attackTargets[cacheKey] = picked;
+        return picked;
     },
 
-    _estimateDistrictScore(gameState, district, party) {
+    _estimateDistrictScore(gameState, district, party, evalCache = null) {
+        const cacheKey = evalCache ? `${district.id}:${party.id}` : null;
+        if (cacheKey && evalCache.districtScores && Number.isFinite(evalCache.districtScores[cacheKey])) {
+            return evalCache.districtScores[cacheKey];
+        }
+
         let score = party.basePopularity;
         if (party.regionalPopMod && party.regionalPopMod[district.region] !== undefined) {
             score += party.regionalPopMod[district.region];
@@ -762,29 +826,45 @@ window.Game.Engine.Campaign = {
         score -= (district.ioDebuff[party.id] || 0);
         const momentum = this._getMomentum(gameState, party.id);
         score += Math.round(momentum * 0.4);
+
+        if (cacheKey && evalCache.districtScores) {
+            evalCache.districtScores[cacheKey] = score;
+        }
         return score;
     },
 
-    _estimateDistrictMargin(gameState, district, partyId) {
+    _estimateDistrictMargin(gameState, district, partyId, evalCache = null) {
+        const cacheKey = evalCache ? `${district.id}:${partyId}` : null;
+        if (cacheKey && evalCache.districtMargins && Number.isFinite(evalCache.districtMargins[cacheKey])) {
+            return evalCache.districtMargins[cacheKey];
+        }
+
         const party = gameState.parties.find(p => p.id === partyId);
         if (!party) return null;
 
         let bestOther = -Infinity;
-        const ownScore = this._estimateDistrictScore(gameState, district, party);
+        const ownScore = this._estimateDistrictScore(gameState, district, party, evalCache);
 
         for (const p of gameState.parties) {
             if (p.id === partyId) continue;
-            const score = this._estimateDistrictScore(gameState, district, p);
+            const score = this._estimateDistrictScore(gameState, district, p, evalCache);
             if (score > bestOther) bestOther = score;
         }
 
-        return ownScore - bestOther;
+        const margin = ownScore - bestOther;
+        if (cacheKey && evalCache.districtMargins) evalCache.districtMargins[cacheKey] = margin;
+        return margin;
     },
 
-    _getBattlegroundProvinces(gameState, partyId, topN = 4) {
+    _getBattlegroundProvinces(gameState, partyId, topN = 4, evalCache = null) {
+        const cacheKey = `${partyId}:${topN}`;
+        if (evalCache && evalCache.battlegroundsByParty && evalCache.battlegroundsByParty[cacheKey]) {
+            return evalCache.battlegroundsByParty[cacheKey];
+        }
+
         const provinceStats = {};
         for (const district of gameState.districts) {
-            const margin = this._estimateDistrictMargin(gameState, district, partyId);
+            const margin = this._estimateDistrictMargin(gameState, district, partyId, evalCache);
             if (margin === null) continue;
 
             const isBattleground = Math.abs(margin) <= 4;
@@ -797,20 +877,29 @@ window.Game.Engine.Campaign = {
             provinceStats[district.provinceName].pressure += (4 - Math.abs(margin));
         }
 
-        return Object.entries(provinceStats)
+        const battlegrounds = Object.entries(provinceStats)
             .map(([provinceName, meta]) => ({ provinceName, ...meta }))
             .sort((a, b) => {
                 if (b.swingSeats !== a.swingSeats) return b.swingSeats - a.swingSeats;
                 return b.pressure - a.pressure;
             })
             .slice(0, topN);
+
+        if (evalCache && evalCache.battlegroundsByParty) {
+            evalCache.battlegroundsByParty[cacheKey] = battlegrounds;
+        }
+        return battlegrounds;
     },
 
-    _pickBestSwingDistrict(gameState, partyId) {
+    _pickBestSwingDistrict(gameState, partyId, evalCache = null) {
+        if (evalCache && evalCache.swingDistrictByParty && evalCache.swingDistrictByParty[partyId]) {
+            return evalCache.swingDistrictByParty[partyId];
+        }
+
         let best = null;
         let bestNeed = Infinity;
         for (const district of gameState.districts) {
-            const margin = this._estimateDistrictMargin(gameState, district, partyId);
+            const margin = this._estimateDistrictMargin(gameState, district, partyId, evalCache);
             if (margin === null) continue;
             if (margin >= 3 || margin <= -8) continue;
             const need = Math.abs(margin);
@@ -819,14 +908,22 @@ window.Game.Engine.Campaign = {
                 best = district;
             }
         }
+
+        if (evalCache && evalCache.swingDistrictByParty) {
+            evalCache.swingDistrictByParty[partyId] = best;
+        }
         return best;
     },
 
-    _pickPlayerPressureProvince(gameState, aiPartyId) {
+    _pickPlayerPressureProvince(gameState, aiPartyId, evalCache = null) {
+        if (evalCache && evalCache.pressureByParty && evalCache.pressureByParty[aiPartyId]) {
+            return evalCache.pressureByParty[aiPartyId];
+        }
+
         const playerId = gameState.playerPartyId;
         const map = {};
         for (const d of gameState.districts) {
-            const playerAdv = this._estimateDistrictMargin(gameState, d, playerId);
+            const playerAdv = this._estimateDistrictMargin(gameState, d, playerId, evalCache);
             if (playerAdv === null || playerAdv < 1) continue;
             map[d.provinceName] = (map[d.provinceName] || 0) + playerAdv;
         }
@@ -834,21 +931,23 @@ window.Game.Engine.Campaign = {
         if (ranked.length === 0) return null;
 
         // Avoid over-focusing one location forever.
-        const pickIndex = Math.min(ranked.length - 1, Math.floor(Math.random() * 2));
-        return ranked[pickIndex][0];
+        const pickIndex = Math.min(ranked.length - 1, Math.floor(this._roll(gameState) * 2));
+        const picked = ranked[pickIndex][0];
+        if (evalCache && evalCache.pressureByParty) evalCache.pressureByParty[aiPartyId] = picked;
+        return picked;
     },
 
     generateWeeklyEvent(gameState) {
         if (!gameState || (gameState.campaignTurn || 1) > this.getMaxCampaignTurns(gameState)) return null;
         const diff = this.getDifficultyConfig(gameState);
-        if (Math.random() > diff.eventChance) return null;
+        if (this._roll(gameState) > diff.eventChance) return null;
 
         let pool = this.EVENT_TEMPLATES;
         if (gameState._lastCampaignEventId) {
             const filtered = pool.filter(e => e.id !== gameState._lastCampaignEventId);
             if (filtered.length > 0) pool = filtered;
         }
-        const chosen = pool[Math.floor(Math.random() * pool.length)];
+        const chosen = pool[Math.floor(this._roll(gameState) * pool.length)];
         if (!chosen) return null;
         gameState._lastCampaignEventId = chosen.id;
         return {
@@ -866,7 +965,7 @@ window.Game.Engine.Campaign = {
         const option = event.options[optionIndex];
         const diff = this.getDifficultyConfig(gameState);
         const adjustedSuccessChance = Math.max(0.2, Math.min(0.92, option.successChance + diff.eventSuccessModifier));
-        const success = Math.random() < adjustedSuccessChance;
+        const success = this._roll(gameState) < adjustedSuccessChance;
         const effects = success ? option.success : option.fail;
 
         if (Number.isFinite(effects.actionPoints)) {
@@ -919,7 +1018,11 @@ window.Game.Engine.Campaign = {
                 const { provinceName } = params;
                 const playerPartyId = gameState.playerPartyId;
                 const calc = window.Game.Engine.Campaign._applyRally(gameState, playerPartyId, provinceName, 3);
-                return `Rally held in ${provinceName}! Popularity +${calc.power} in all districts.`;
+                return {
+                    success: true,
+                    message: `Rally held in ${provinceName}! Popularity +${calc.power} in all districts.`,
+                    effects: { provinceName, power: calc.power }
+                };
             }
         },
         attackAd: {
@@ -931,7 +1034,11 @@ window.Game.Engine.Campaign = {
             execute(gameState, params) {
                 const { provinceName, targetPartyId } = params;
                 const calc = window.Game.Engine.Campaign._applyAttack(gameState, gameState.playerPartyId, targetPartyId, provinceName, 3);
-                return `Attack ads deployed in ${provinceName}! ${targetPartyId} debuffed by ${calc.power}.`;
+                return {
+                    success: true,
+                    message: `Attack ads deployed in ${provinceName}! ${targetPartyId} debuffed by ${calc.power}.`,
+                    effects: { provinceName, targetPartyId, power: calc.power }
+                };
             }
         },
         canvass: {
@@ -943,8 +1050,14 @@ window.Game.Engine.Campaign = {
             execute(gameState, params) {
                 const { districtId } = params;
                 const calc = window.Game.Engine.Campaign._applyCanvass(gameState, gameState.playerPartyId, districtId, 5);
-                if (!calc) return 'District not found.';
-                return `Canvassing complete! Local candidate popularity +${calc.power}.`;
+                if (!calc) {
+                    return { success: false, message: 'District not found.' };
+                }
+                return {
+                    success: true,
+                    message: `Canvassing complete! Local candidate popularity +${calc.power}.`,
+                    effects: { districtId, power: calc.power }
+                };
             }
         },
         fundraise: {
@@ -959,7 +1072,11 @@ window.Game.Engine.Campaign = {
                 const diff = window.Game.Engine.Campaign.getDifficultyConfig(gameState);
                 const gain = Math.round((40 + Math.max(-10, Math.min(20, momentum * 2))) * diff.fundraiseMultiplier);
                 p.politicalCapital += gain;
-                return `Raised ${gain} political capital! Total: ${p.politicalCapital}`;
+                return {
+                    success: true,
+                    message: `Raised ${gain} political capital! Total: ${p.politicalCapital}`,
+                    effects: { capitalGain: gain }
+                };
             }
         },
         ioOperation: {
@@ -980,8 +1097,14 @@ window.Game.Engine.Campaign = {
                     5,
                     5
                 );
-                if (!calc) return 'Not enough grey money for IO operation.';
-                return `IO deployed in ${provinceName}. ${targetPartyId} debuffed by ${calc.power}. Scandal +5.`;
+                if (!calc) {
+                    return { success: false, message: 'Not enough grey money for IO operation.' };
+                }
+                return {
+                    success: true,
+                    message: `IO deployed in ${provinceName}. ${targetPartyId} debuffed by ${calc.power}. Scandal +5.`,
+                    effects: { provinceName, targetPartyId, power: calc.power }
+                };
             }
         },
         buySupport: {
@@ -1001,8 +1124,14 @@ window.Game.Engine.Campaign = {
                     8,
                     4
                 );
-                if (!calc) return 'Not enough grey money to buy support.';
-                return `Support bought in ${provinceName}. BanYai +${calc.power}. Scandal +8.`;
+                if (!calc) {
+                    return { success: false, message: 'Not enough grey money to buy support.' };
+                }
+                return {
+                    success: true,
+                    message: `Support bought in ${provinceName}. BanYai +${calc.power}. Scandal +8.`,
+                    effects: { provinceName, power: calc.power }
+                };
             }
         },
         promisePolicy: {
@@ -1017,7 +1146,7 @@ window.Game.Engine.Campaign = {
                 if (!gameState.campaignPromises) gameState.campaignPromises = [];
                 // Check for duplicates
                 if (gameState.campaignPromises.find(p => p.promiseId === promise.promiseId)) {
-                    return `Already promised ${promise.engName}!`;
+                    return { success: false, message: `Already promised ${promise.engName}!` };
                 }
                 gameState.campaignPromises.push({
                     promiseId: promise.promiseId,
@@ -1031,15 +1160,17 @@ window.Game.Engine.Campaign = {
                 for (const [region, boost] of Object.entries(promise.popularityBoost)) {
                     const provinces = window.Game.Data.REGIONS[region] || [];
                     for (const prov of provinces) {
-                        for (const d of gameState.districts) {
-                            if (d.provinceName === prov) {
-                                window.Game.Engine.Campaign._addCampaignBuff(d, playerPartyId, boost);
-                            }
+                        for (const d of window.Game.Engine.Campaign._getProvinceDistricts(gameState, prov)) {
+                            window.Game.Engine.Campaign._addCampaignBuff(d, playerPartyId, boost);
                         }
                     }
                 }
                 window.Game.Engine.Campaign._adjustMomentum(gameState, playerPartyId, 1);
-                return `📜 Promised: ${promise.engName}! Popularity boosted in key regions.`;
+                return {
+                    success: true,
+                    message: `📜 Promised: ${promise.engName}! Popularity boosted in key regions.`,
+                    effects: { promiseId: promise.promiseId }
+                };
             }
         }
     },
@@ -1058,19 +1189,19 @@ window.Game.Engine.Campaign = {
             let aiAP = diff.aiAPBase + (momentum >= 4 ? 1 : 0);
             const aggression = diff.aiAggression;
 
-            const battlegrounds = this._getBattlegroundProvinces(gameState, party.id, 5);
-
             while (aiAP >= 2) {
                 let acted = false;
+                const aiEvalCache = this._createAIScoreCache();
+                const battlegrounds = this._getBattlegroundProvinces(gameState, party.id, 5, aiEvalCache);
 
                 const shadowTrigger = (profile.shadowy ? 0.2 : 0.07) + (persona.shadowFocus * 0.28) + (aggression * 0.2);
-                if (aiAP >= 5 && party.greyMoney >= 30 && Math.random() < shadowTrigger) {
-                    const pressureProvince = this._pickPlayerPressureProvince(gameState, party.id)
+                if (aiAP >= 5 && party.greyMoney >= 30 && this._roll(gameState) < shadowTrigger) {
+                    const pressureProvince = this._pickPlayerPressureProvince(gameState, party.id, aiEvalCache)
                         || (battlegrounds[0] ? battlegrounds[0].provinceName : null);
                     if (pressureProvince) {
-                        const targetPartyId = Math.random() < 0.75
+                        const targetPartyId = this._roll(gameState) < 0.75
                             ? gameState.playerPartyId
-                            : this._pickAttackTargetParty(gameState, party.id, pressureProvince);
+                            : this._pickAttackTargetParty(gameState, party.id, pressureProvince, aiEvalCache);
                         const io = this._applyIO(gameState, party.id, targetPartyId, pressureProvince, 30, 4, 4);
                         if (io) {
                             aiAP -= 5;
@@ -1081,11 +1212,11 @@ window.Game.Engine.Campaign = {
                 if (acted) continue;
 
                 const attackTrigger = (profile.aggressive ? 0.22 : 0.08) + (persona.aggression * 0.28) + (aggression * 0.25);
-                if (aiAP >= 4 && battlegrounds.length > 0 && Math.random() < attackTrigger) {
+                if (aiAP >= 4 && battlegrounds.length > 0 && this._roll(gameState) < attackTrigger) {
                     const targetProvince = battlegrounds[0].provinceName;
-                    const targetPartyId = Math.random() < 0.75
+                    const targetPartyId = this._roll(gameState) < 0.75
                         ? gameState.playerPartyId
-                        : this._pickAttackTargetParty(gameState, party.id, targetProvince);
+                        : this._pickAttackTargetParty(gameState, party.id, targetProvince, aiEvalCache);
                     this._applyAttack(gameState, party.id, targetPartyId, targetProvince, 2.5);
                     aiAP -= 4;
                     acted = true;
@@ -1093,14 +1224,14 @@ window.Game.Engine.Campaign = {
                 if (acted) continue;
 
                 if (aiAP >= 3) {
-                    const shouldPushStronghold = Math.random() < (0.35 + persona.grassrootsFocus * 0.3);
+                    const shouldPushStronghold = this._roll(gameState) < (0.35 + persona.grassrootsFocus * 0.3);
                     const battleground = shouldPushStronghold ? battlegrounds.shift() : null;
                     let rallyProvince = battleground ? battleground.provinceName : null;
                     if (!rallyProvince) {
                         const strongRegion = this._getPartyStronghold(party);
                         const strongholdProvs = window.Game.Data.REGIONS[strongRegion] || [];
                         if (strongholdProvs.length > 0) {
-                            rallyProvince = strongholdProvs[Math.floor(Math.random() * strongholdProvs.length)];
+                            rallyProvince = strongholdProvs[Math.floor(this._roll(gameState) * strongholdProvs.length)];
                         }
                     }
                     if (rallyProvince) {
@@ -1112,7 +1243,8 @@ window.Game.Engine.Campaign = {
                 if (acted) continue;
 
                 if (aiAP >= 2) {
-                    const swingDistrict = this._pickBestSwingDistrict(gameState, party.id) || gameState.districts[Math.floor(Math.random() * gameState.districts.length)];
+                    const swingDistrict = this._pickBestSwingDistrict(gameState, party.id, aiEvalCache)
+                        || gameState.districts[Math.floor(this._roll(gameState) * gameState.districts.length)];
                     if (swingDistrict) {
                         this._applyCanvass(gameState, party.id, swingDistrict.id, 3);
                         aiAP -= 2;
@@ -1180,6 +1312,10 @@ window.Game.Engine.Parliament = {
     OPPOSITION_SPLIT_SHARE_MIN: 0.25,
     OPPOSITION_SPLIT_SHARE_MAX: 0.45,
 
+    _roll(gameState) {
+        return engineRoll(gameState);
+    },
+
     _applyRegionalPopDelta(party, region, delta, cap = 24) {
         if (!party || !region || !Number.isFinite(delta) || delta === 0) return 0;
         if (!party.regionalPopMod) party.regionalPopMod = {};
@@ -1219,7 +1355,7 @@ window.Game.Engine.Parliament = {
         const min = Number.isFinite(opts.noiseMin) ? opts.noiseMin : this.POPULARITY_RANDOM_MIN;
         const max = Number.isFinite(opts.noiseMax) ? opts.noiseMax : this.POPULARITY_RANDOM_MAX;
         if (max <= min) return min;
-        return min + (Math.random() * (max - min));
+        return min + (this._roll(opts.gameState) * (max - min));
     },
 
     _buildPopularityContext(gameState, partyId, opts = {}) {
@@ -1241,7 +1377,7 @@ window.Game.Engine.Parliament = {
         const momentumMultiplier = 1 + (0.015 * momentum);
 
         const diminishingMultiplier = 1 / (1 + (0.35 * repeatCount));
-        const noiseMultiplier = this._getPopularityNoise(opts);
+        const noiseMultiplier = this._getPopularityNoise({ ...opts, gameState });
 
         return {
             ledger,
@@ -1463,7 +1599,7 @@ window.Game.Engine.Parliament = {
         }
 
         const share = this.OPPOSITION_WALKOUT_SHARE_MIN +
-            (Math.random() * (this.OPPOSITION_WALKOUT_SHARE_MAX - this.OPPOSITION_WALKOUT_SHARE_MIN));
+            (this._roll(gameState) * (this.OPPOSITION_WALKOUT_SHARE_MAX - this.OPPOSITION_WALKOUT_SHARE_MIN));
         const swingSeats = Math.max(8, Math.round(coalitionSeats * share));
 
         gameState.oppositionWalkoutPlan = {
@@ -1498,7 +1634,7 @@ window.Game.Engine.Parliament = {
 
         const baseChance = Math.max(0.2, 0.62 - Math.min(0.28, targetSeats / 220));
         const chancePercent = Math.round(baseChance * 100);
-        if (Math.random() > baseChance) {
+        if (this._roll(gameState) > baseChance) {
             return {
                 success: false,
                 chancePercent,
@@ -1507,7 +1643,7 @@ window.Game.Engine.Parliament = {
         }
 
         const share = this.OPPOSITION_SPLIT_SHARE_MIN +
-            (Math.random() * (this.OPPOSITION_SPLIT_SHARE_MAX - this.OPPOSITION_SPLIT_SHARE_MIN));
+            (this._roll(gameState) * (this.OPPOSITION_SPLIT_SHARE_MAX - this.OPPOSITION_SPLIT_SHARE_MIN));
         const abstainSeats = Math.max(3, Math.round(targetSeats * share));
         gameState.oppositionSplitPlan = {
             sessionNumber: gameState.sessionNumber,
@@ -1611,10 +1747,10 @@ window.Game.Engine.Parliament = {
         return ['Bangkok', 'Central', 'North', 'Northeast', 'East', 'West', 'South'];
     },
 
-    _getPartyPressureRegion(party) {
+    _getPartyPressureRegion(party, gameState) {
         const fallback = this._getParliamentRegionKeys();
         if (!party || !party.regionalPopMod || typeof party.regionalPopMod !== 'object') {
-            return fallback[Math.floor(Math.random() * fallback.length)];
+            return fallback[Math.floor(this._roll(gameState) * fallback.length)];
         }
 
         let bestRegion = null;
@@ -1628,7 +1764,7 @@ window.Game.Engine.Parliament = {
         }
 
         if (bestRegion) return bestRegion;
-        return fallback[Math.floor(Math.random() * fallback.length)];
+        return fallback[Math.floor(this._roll(gameState) * fallback.length)];
     },
 
     getOppositionPressureModel(gameState) {
@@ -1804,7 +1940,7 @@ window.Game.Engine.Parliament = {
             requestedNational = Math.max(0.2, requestedNational);
             requestedNational = Math.min(gainBudget, requestedNational);
 
-            const focusRegion = this._getPartyPressureRegion(row.party);
+            const focusRegion = this._getPartyPressureRegion(row.party, gameState);
             const requestedRegional = requestedNational >= 0.45
                 ? this._roundPopularity(Math.min(1, requestedNational * 0.75))
                 : 0;
@@ -1847,7 +1983,7 @@ window.Game.Engine.Parliament = {
         let governmentDelta = { national: 0, regional: {} };
         if (playerParty && pressureIndex >= 48) {
             const requestedPenalty = this._roundPopularity((0.25 + (pressureModel.pressureNorm * 0.95)) * stepScale);
-            const focusRegion = this._getPartyPressureRegion(playerParty);
+            const focusRegion = this._getPartyPressureRegion(playerParty, gameState);
             const regionalPenalty = requestedPenalty >= 0.7
                 ? -this._roundPopularity(Math.min(1, requestedPenalty * 0.65))
                 : 0;
@@ -1912,7 +2048,7 @@ window.Game.Engine.Parliament = {
         const health = this.getCoalitionHealth(gameState);
         const escalation = this._getOppositionEscalation(gameState);
         const pressureModel = this.getOppositionPressureModel(gameState);
-        const templates = this._getOppositionTacticTemplates().sort(() => Math.random() - 0.5);
+        const templates = engineShuffle(gameState, this._getOppositionTacticTemplates());
         let tacticCount = this.OPPOSITION_PLAN_BASE_TACTICS;
         const maxTactics = pressureModel.thirdTacticChance > 0.05
             ? this.OPPOSITION_PLAN_MAX_TACTICS_UNDER_PRESSURE
@@ -1921,7 +2057,7 @@ window.Game.Engine.Parliament = {
             (escalation * this.OPPOSITION_PLAN_SECOND_TACTIC_LATE_BONUS) +
             pressureModel.secondTacticBonus;
         const instabilityThreshold = 46 + Math.round(escalation * 4) + Math.round(pressureModel.pressureNorm * 5);
-        if (health.average < instabilityThreshold || Math.random() < secondTacticChance) {
+        if (health.average < instabilityThreshold || this._roll(gameState) < secondTacticChance) {
             tacticCount = Math.min(2, maxTactics);
             if (maxTactics > 2) {
                 const thirdTacticChance = Math.max(0, Math.min(0.85,
@@ -1929,7 +2065,7 @@ window.Game.Engine.Parliament = {
                     (pressureModel.thirdTacticChance * this.OPPOSITION_PLAN_THIRD_TACTIC_PRESSURE_BONUS) +
                     (health.lowest < 30 ? 0.08 : 0)
                 ));
-                if (Math.random() < thirdTacticChance) {
+                if (this._roll(gameState) < thirdTacticChance) {
                     tacticCount = 3;
                 }
             }
@@ -1941,13 +2077,13 @@ window.Game.Engine.Parliament = {
             const pressureStrengthBonus = pressureModel.tacticStrengthBonus;
             let severity = tpl.severity;
             if (health.lowest < 25 && escalation >= 0.4) severity += 1;
-            if (escalation >= 0.75 && Math.random() < 0.35) severity += 1;
-            if (pressureModel.severityBonus > 0 && Math.random() < 0.45) severity += pressureModel.severityBonus;
+            if (escalation >= 0.75 && this._roll(gameState) < 0.35) severity += 1;
+            if (pressureModel.severityBonus > 0 && this._roll(gameState) < 0.45) severity += pressureModel.severityBonus;
             if (escalation < 0.35 && tpl.scope === 'no_confidence') severity -= 1;
             severity = Math.max(1, Math.min(3, severity));
 
             const spread = Math.max(1, tpl.maxStrength - tpl.minStrength);
-            const baseStrength = tpl.minStrength + Math.floor(Math.random() * (spread + 1));
+            const baseStrength = tpl.minStrength + Math.floor(this._roll(gameState) * (spread + 1));
             const termBias = Math.round(
                 (-this.OPPOSITION_PLAN_STRENGTH_EARLY_PENALTY) +
                 (escalation * (this.OPPOSITION_PLAN_STRENGTH_EARLY_PENALTY + this.OPPOSITION_PLAN_STRENGTH_LATE_BONUS))
@@ -1955,7 +2091,7 @@ window.Game.Engine.Parliament = {
             const strength = Math.max(3, Math.min(32, baseStrength + instabilityBonus + termBias + pressureStrengthBonus));
 
             return {
-                instanceId: `${tpl.id}_${currentSession}_${idx}_${Math.floor(Math.random() * 10000)}`,
+                instanceId: `${tpl.id}_${currentSession}_${idx}_${Math.floor(this._roll(gameState) * 10000)}`,
                 id: tpl.id,
                 label: tpl.label,
                 description: tpl.description,
@@ -2098,7 +2234,7 @@ window.Game.Engine.Parliament = {
         if (health.average < 40) chance -= 0.06;
         chance = Math.max(0.15, Math.min(0.9, chance));
 
-        const success = Math.random() < chance;
+        const success = this._roll(gameState) < chance;
         const chancePercent = Math.round(chance * 100);
         if (success) {
             tactic.blocked = true;
@@ -2263,7 +2399,7 @@ window.Game.Engine.Parliament = {
             if (playerParty.politicalCapital < cost) return { success: false, msg: `Need ${cost} political capital.` };
             playerParty.politicalCapital -= cost;
 
-            const popBoost = Math.random() < (0.75 * mult) ? 1 : 0;
+            const popBoost = this._roll(gameState) < (0.75 * mult) ? 1 : 0;
             if (popBoost > 0) {
                 this.applyPopularityImpact(
                     gameState,
@@ -2278,7 +2414,7 @@ window.Game.Engine.Parliament = {
                 );
             }
 
-            const scandalRelief = Math.random() < (0.45 * mult) ? 1 : 0;
+            const scandalRelief = this._roll(gameState) < (0.45 * mult) ? 1 : 0;
             playerParty.scandalMeter = Math.max(0, playerParty.scandalMeter - scandalRelief);
 
             effects.capitalCost = cost;
@@ -2294,7 +2430,7 @@ window.Game.Engine.Parliament = {
 
             const scandalRise = Math.max(4, Math.round(7 - (mult * 1.2)));
             playerParty.scandalMeter = Math.min(100, playerParty.scandalMeter + scandalRise);
-            const shieldGranted = Math.random() < (0.75 * mult);
+            const shieldGranted = this._roll(gameState) < (0.75 * mult);
             gameState.pmEmergencyShield = shieldGranted ? Math.max(gameState.pmEmergencyShield || 0, 1) : (gameState.pmEmergencyShield || 0);
 
             const trustBoost = mult >= 0.95 ? 1 : 0;
@@ -2346,15 +2482,15 @@ window.Game.Engine.Parliament = {
         if (unpassed.length === 0) return { queuedCount: 0, bills: [] };
 
         let queueCount = 1;
-        if (stepYears >= 1 && this.getGovernmentBillSessionCap(gameState) > 1 && Math.random() < 0.45) {
+        if (stepYears >= 1 && this.getGovernmentBillSessionCap(gameState) > 1 && this._roll(gameState) < 0.45) {
             queueCount = 2;
         }
         const queued = [];
         for (let i = 0; i < queueCount && unpassed.length > 0; i++) {
-            const idx = Math.floor(Math.random() * unpassed.length);
+            const idx = Math.floor(this._roll(gameState) * unpassed.length);
             const tmpl = unpassed.splice(idx, 1)[0];
             const entry = {
-                id: `gov_${Date.now()}_${Math.floor(Math.random() * 100000)}`,
+                id: `gov_${Date.now()}_${Math.floor(this._roll(gameState) * 100000)}`,
                 name: tmpl.name,
                 description: tmpl.description || '',
                 effects: { ...(tmpl.effects || {}) },
@@ -2470,7 +2606,7 @@ window.Game.Engine.Parliament = {
                     let adjustedChange = change;
                     if (change > 0) {
                         adjustedChange = Math.round(change * this.OPPOSITION_GOV_BILL_POSITIVE_SCALE);
-                        if (adjustedChange <= 0 && Math.random() < 0.35) adjustedChange = 1;
+                        if (adjustedChange <= 0 && this._roll(gameState) < 0.35) adjustedChange = 1;
                     } else if (change < 0) {
                         adjustedChange = Math.round(change * this.OPPOSITION_GOV_BILL_NEGATIVE_SCALE);
                     }
@@ -2509,7 +2645,7 @@ window.Game.Engine.Parliament = {
                 for (const [region, change] of Object.entries(billRegionalEffects)) {
                     if (change <= 0) continue;
                     const coalitionBoost = Math.round(change * this.OPPOSITION_GOV_COALITION_SPILLOVER_SCALE);
-                    if (coalitionBoost <= 0 || Math.random() > this.OPPOSITION_GOV_COALITION_SPILLOVER_CHANCE) continue;
+                    if (coalitionBoost <= 0 || this._roll(gameState) > this.OPPOSITION_GOV_COALITION_SPILLOVER_CHANCE) continue;
                     partnerRawMap[region] = coalitionBoost;
                 }
 
@@ -2615,7 +2751,7 @@ window.Game.Engine.Parliament = {
     /**
      * AI calculates ministry demands based on seat proportion.
      */
-    getMinistryDemands(partyId, seatCount, totalCoalitionSeats) {
+    getMinistryDemands(partyId, seatCount, totalCoalitionSeats, gameState = null) {
         const MINISTRIES = [
             "Interior", "Finance", "Defense", "Foreign Affairs", "Education",
             "Public Health", "Transport", "Commerce", "Agriculture",
@@ -2628,7 +2764,7 @@ window.Game.Engine.Parliament = {
         const demandCount = Math.max(1, Math.round(proportion * MINISTRIES.length));
 
         // Prioritize certain ministries based on party ideology
-        const shuffled = [...MINISTRIES].sort(() => Math.random() - 0.5);
+        const shuffled = engineShuffle(gameState, MINISTRIES);
         return shuffled.slice(0, demandCount);
     },
 
@@ -2921,12 +3057,12 @@ window.Game.Engine.Parliament = {
         chance += (playerParty.scandalMeter || 0) * this.MINISTERIAL_SCANDAL_SCANDAL_SCALE;
         if (coalitionHealth.average < 45) chance += this.MINISTERIAL_SCANDAL_STRAIN_BONUS;
         chance = Math.max(0.08, Math.min(0.46, chance));
-        if (Math.random() > chance) return null;
+        if (this._roll(gameState) > chance) return null;
 
-        const ministry = ministries[Math.floor(Math.random() * ministries.length)];
+        const ministry = ministries[Math.floor(this._roll(gameState) * ministries.length)];
         const targetPartyId = status.assignments[ministry];
         const targetParty = (gameState.parties || []).find(p => p.id === targetPartyId);
-        const severityRoll = Math.random() + ((playerParty.scandalMeter || 0) / 120);
+        const severityRoll = this._roll(gameState) + ((playerParty.scandalMeter || 0) / 120);
         const severity = severityRoll > 1.15 ? 3 : (severityRoll > 0.6 ? 2 : 1);
 
         const allegationPool = [
@@ -2935,9 +3071,9 @@ window.Game.Engine.Parliament = {
             'inflated contract pricing',
             'favored bidding process'
         ];
-        const allegation = allegationPool[Math.floor(Math.random() * allegationPool.length)];
+        const allegation = allegationPool[Math.floor(this._roll(gameState) * allegationPool.length)];
         const event = {
-            id: `ministerial_scandal_${Date.now()}_${Math.floor(Math.random() * 10000)}`,
+            id: `ministerial_scandal_${Date.now()}_${Math.floor(this._roll(gameState) * 10000)}`,
             sessionNumber: gameState.sessionNumber,
             ministry,
             targetPartyId,
@@ -3038,7 +3174,7 @@ window.Game.Engine.Parliament = {
             const walkoutChance = Math.max(0.1, Math.min(0.7,
                 0.18 + (severity * 0.12) + ((sat && sat.score < 20) ? 0.2 : 0)
             ));
-            if (sat && sat.score < 16 && Math.random() < walkoutChance) {
+            if (sat && sat.score < 16 && this._roll(gameState) < walkoutChance) {
                 gameState.coalitionPartyIds = (gameState.coalitionPartyIds || []).filter(pid => pid !== event.targetPartyId);
                 if (gameState.coalitionSatisfaction) delete gameState.coalitionSatisfaction[event.targetPartyId];
                 outcome.walkoutTriggered = true;
@@ -3096,7 +3232,7 @@ window.Game.Engine.Parliament = {
             const partyPosition = isCoalition ? 'aye' : 'nay';
             const playerPosition = 'aye'; // Player proposes = aye
 
-            const vote = mp.voteLogic(bill, partyPosition, playerPosition);
+            const vote = mp.voteLogic(bill, partyPosition, playerPosition, gameState.random);
             if (vote === 'aye') aye++;
             else if (vote === 'nay') nay++;
             else abstain++;
@@ -3132,7 +3268,7 @@ window.Game.Engine.Parliament = {
             const partyPosition = isCoalition ? 'aye' : 'nay';
             const playerPosition = 'aye';
 
-            const vote = mp.voteLogic(bill, partyPosition, playerPosition);
+            const vote = mp.voteLogic(bill, partyPosition, playerPosition, gameState.random);
             if (vote === 'aye') aye++;
             else if (vote === 'nay') nay++;
             else abstain++;
@@ -3359,7 +3495,7 @@ window.Game.Engine.Parliament = {
             const partyPosition = isCoalition ? 'nay' : 'aye'; // Coalition defends
             const playerPosition = isOppositionPlayer ? 'aye' : 'nay';
 
-            const vote = mp.voteLogic(bill, partyPosition, playerPosition);
+            const vote = mp.voteLogic(bill, partyPosition, playerPosition, gameState.random);
             if (vote === 'aye') aye++;
             else if (vote === 'nay') nay++;
             else abstain++;
@@ -3388,12 +3524,16 @@ window.Game.Engine.Parliament = {
             capitalCost: 40,
             icon: "🤝",
             execute(gameState, targetPartyId) {
+                const pp = gameState.parties.find(p => p.id === gameState.playerPartyId);
+                if (!pp || pp.politicalCapital < 40) {
+                    return 'Not enough political capital for Quid Pro Quo.';
+                }
+
                 const mps = gameState.seatedMPs.filter(mp => mp.partyId === targetPartyId);
                 // Temporarily boost their loyalty toward the aye position
                 for (const mp of mps) {
                     mp.loyaltyToParty = Math.min(100, mp.loyaltyToParty + 15);
                 }
-                const pp = gameState.parties.find(p => p.id === gameState.playerPartyId);
                 pp.politicalCapital -= 40;
                 return `Deal struck with ${targetPartyId}! Their MPs' loyalty increased.`;
             }
@@ -3406,6 +3546,11 @@ window.Game.Engine.Parliament = {
             icon: "📋",
             execute(gameState) {
                 const playerPartyId = gameState.playerPartyId;
+                const pp = gameState.parties.find(p => p.id === playerPartyId);
+                if (!pp || pp.politicalCapital < 25) {
+                    return 'Not enough political capital for Whip operation.';
+                }
+
                 const coalitionMPs = gameState.seatedMPs.filter(
                     mp => gameState.coalitionPartyIds.includes(mp.partyId)
                 );
@@ -3416,7 +3561,6 @@ window.Game.Engine.Parliament = {
                         whipped++;
                     }
                 }
-                const pp = gameState.parties.find(p => p.id === playerPartyId);
                 pp.politicalCapital -= 25;
                 return `Whipped ${whipped} rebellious coalition MPs into line!`;
             }
@@ -3435,6 +3579,10 @@ window.Game.Engine.Parliament = {
 
                 if (mp.corruptionLevel < 30) {
                     return `${mp.name} refuses the bribe! Too clean.`;
+                }
+
+                if (!pp || pp.greyMoney < 50) {
+                    return 'Not enough grey money for bribe.';
                 }
 
                 pp.greyMoney -= 50;
@@ -3635,7 +3783,7 @@ window.Game.Engine.Parliament = {
             sat.demands = activeDemands;
 
             // Maybe generate new demand (22% chance if < 2 active demands)
-            if (sat.demands.length < 2 && Math.random() < 0.22) {
+            if (sat.demands.length < 2 && this._roll(gameState) < 0.22) {
                 const newDemand = this._generateCoalitionDemand(gameState, pid);
                 if (newDemand) {
                     sat.demands.push(newDemand);
@@ -3644,7 +3792,7 @@ window.Game.Engine.Parliament = {
             }
 
             // Maybe trigger coalition event (14% chance, not same session)
-            if (sat.lastEventSession !== gameState.sessionNumber && Math.random() < 0.14) {
+            if (sat.lastEventSession !== gameState.sessionNumber && this._roll(gameState) < 0.14) {
                 const event = this._generateCoalitionEvent(gameState, pid);
                 if (event) {
                     sat.lastEventSession = gameState.sessionNumber;
@@ -3662,10 +3810,10 @@ window.Game.Engine.Parliament = {
         const existing = ((gameState.coalitionSatisfaction[partyId] || {}).demands || []).map(d => d.id);
         const pool = this.COALITION_DEMAND_TEMPLATES.filter(t => !existing.includes(t.id));
         if (pool.length === 0) return null;
-        const template = pool[Math.floor(Math.random() * pool.length)];
+        const template = pool[Math.floor(this._roll(gameState) * pool.length)];
         return {
             ...template,
-            instanceId: `${template.id}_${Date.now()}_${Math.floor(Math.random() * 10000)}`,
+            instanceId: `${template.id}_${Date.now()}_${Math.floor(this._roll(gameState) * 10000)}`,
             remainingSessions: template.deadlineSessions,
             fulfilled: false,
             createdSession: gameState.sessionNumber
@@ -3679,16 +3827,113 @@ window.Game.Engine.Parliament = {
         // Weight walkout threats toward low satisfaction
         if (sat.score > 50) pool = pool.filter(e => e.id !== 'partner_walkout_threat');
         if (pool.length === 0) return null;
-        const template = pool[Math.floor(Math.random() * pool.length)];
+        const template = pool[Math.floor(this._roll(gameState) * pool.length)];
         return { ...template, targetPartyId: partyId, options: template.options.map(o => ({ ...o, effect: { ...o.effect } })) };
     },
 
-    resolveCoalitionEvent(gameState, partyId, optionIndex) {
-        const sat = gameState.coalitionSatisfaction[partyId];
-        if (!sat) return null;
-        // Event is passed from UI, option effects are applied here
+    resolveCoalitionEvent(gameState, partyId, eventOrOptionIndex, maybeOptionIndex) {
+        if (!gameState || !partyId) return { applied: false, msg: 'Invalid coalition event context.' };
+
+        const sat = gameState.coalitionSatisfaction ? gameState.coalitionSatisfaction[partyId] : null;
+        if (!sat) return { applied: false, msg: 'No satisfaction data for target party.' };
+
+        let event = null;
+        let optionIndex = null;
+
+        if (typeof eventOrOptionIndex === 'number') {
+            optionIndex = eventOrOptionIndex;
+            const queued = (gameState.pendingCoalitionEvents || []).find(
+                e => e && e.partyId === partyId && e.event && Array.isArray(e.event.options)
+            );
+            event = queued ? queued.event : null;
+        } else {
+            event = eventOrOptionIndex || null;
+            optionIndex = maybeOptionIndex;
+        }
+
+        if (!event || !Array.isArray(event.options)) {
+            return { applied: false, msg: 'Coalition event is missing or invalid.' };
+        }
+
+        const option = event.options[optionIndex];
+        if (!option) return { applied: false, msg: 'Invalid coalition event option.' };
+
         const playerParty = (gameState.parties || []).find(p => p.id === gameState.playerPartyId);
-        return { applied: true };
+        const effect = option.effect || {};
+        const result = {
+            applied: true,
+            partyId,
+            eventId: event.id || null,
+            optionIndex,
+            satisfactionDelta: 0,
+            capitalDelta: 0,
+            scandalDelta: 0,
+            popularityDelta: 0,
+            walkoutTriggered: false,
+            msg: option.label || 'Coalition event resolved.'
+        };
+
+        if (Number.isFinite(effect.partnerSatisfaction) && sat) {
+            const before = Number.isFinite(sat.score) ? sat.score : 50;
+            sat.score = Math.max(5, Math.min(95, before + effect.partnerSatisfaction));
+            result.satisfactionDelta = Math.round((sat.score - before) * 10) / 10;
+        }
+
+        if (Number.isFinite(effect.capital) && playerParty) {
+            const before = Number.isFinite(playerParty.politicalCapital) ? playerParty.politicalCapital : 0;
+            playerParty.politicalCapital = Math.max(0, before + effect.capital);
+            result.capitalDelta = Math.round((playerParty.politicalCapital - before) * 10) / 10;
+        }
+
+        if (Number.isFinite(effect.scandal) && playerParty) {
+            const before = Number.isFinite(playerParty.scandalMeter) ? playerParty.scandalMeter : 0;
+            playerParty.scandalMeter = Math.max(0, Math.min(100, before + effect.scandal));
+            result.scandalDelta = Math.round((playerParty.scandalMeter - before) * 10) / 10;
+        }
+
+        if (Number.isFinite(effect.popularity) && playerParty) {
+            const impact = this.applyPopularityImpact(
+                gameState,
+                playerParty.id,
+                { national: effect.popularity },
+                {
+                    sourceKey: `coalition_event_${event.id || 'generic'}_${gameState.sessionNumber || 1}`,
+                    skill: 0.56,
+                    nationalMaxDelta: 1,
+                    annualGainBudget: 3.2,
+                    annualLossBudget: 5,
+                    useNoise: false
+                }
+            );
+            result.popularityDelta = Number(impact.national) || 0;
+        }
+
+        if (effect.riskWalkout && sat && sat.score < 20 && this._roll(gameState) < 0.4) {
+            gameState.coalitionPartyIds = (gameState.coalitionPartyIds || []).filter(id => id !== partyId);
+            if (gameState.coalitionSatisfaction) {
+                delete gameState.coalitionSatisfaction[partyId];
+            }
+
+            const cabinet = gameState.cabinetPortfolioState;
+            if (cabinet && cabinet.assignments) {
+                let vacated = 0;
+                for (const ministry of (this.CABINET_GRADE_A_MINISTRIES || [])) {
+                    if (cabinet.assignments[ministry] === partyId) {
+                        cabinet.assignments[ministry] = null;
+                        vacated++;
+                    }
+                }
+                if (vacated > 0) {
+                    cabinet.finalized = false;
+                    cabinet.finalizedSession = null;
+                }
+            }
+
+            result.walkoutTriggered = true;
+        }
+
+        this.recordCoalitionSatisfactionSnapshot(gameState);
+        return result;
     },
 
     fulfillCoalitionDemand(gameState, partyId, demandInstanceId) {
@@ -3742,7 +3987,7 @@ window.Game.Engine.Parliament = {
 
         // Find the most unhappy partner
         for (const [pid, data] of Object.entries(health.parties)) {
-            if (data.score < 10 && Math.random() < 0.3) {
+            if (data.score < 10 && this._roll(gameState) < 0.3) {
                 // Partner walks out!
                 const coalitionIds = [...(gameState.coalitionPartyIds || [])];
                 gameState.coalitionPartyIds = coalitionIds.filter(id => id !== pid);
@@ -3800,7 +4045,7 @@ window.Game.Engine.Parliament = {
         const lastIds = gameState._lastInterpellationIds || [];
         const filtered = pool.filter(t => !lastIds.includes(t.id));
         const source = filtered.length >= count ? filtered : pool;
-        const shuffled = source.sort(() => Math.random() - 0.5);
+        const shuffled = engineShuffle(gameState, source);
         const selected = shuffled.slice(0, count);
         gameState._lastInterpellationIds = selected.map(s => s.id);
         return selected.map(t => ({ ...t, options: t.options.map(o => ({ ...o, effect: { ...o.effect } })) }));
@@ -3917,6 +4162,10 @@ window.Game.Engine.Parliament = {
 // ─── SHADOW ENGINE ───────────────────────────────────────────
 window.Game.Engine.Shadow = {
 
+    _roll(gameState) {
+        return engineRoll(gameState);
+    },
+
     /**
      * Dark Wallet: Siphon political capital into grey money.
      */
@@ -4010,13 +4259,13 @@ window.Game.Engine.Shadow = {
         }
         if (pp.scandalMeter >= 70) {
             // 40% chance of investigation
-            if (Math.random() < 0.4) {
+            if (this._roll(gameState) < 0.4) {
                 return this._triggerInvestigation(gameState, 'moderate');
             }
         }
         if (pp.scandalMeter >= 40) {
             // 10% chance
-            if (Math.random() < 0.1) {
+            if (this._roll(gameState) < 0.1) {
                 return this._triggerInvestigation(gameState, 'minor');
             }
         }
@@ -4054,6 +4303,10 @@ window.Game.Engine.Shadow = {
 
 // ─── CRISIS ENGINE ───────────────────────────────────────────
 window.Game.Engine.Crisis = {
+
+    _roll(gameState) {
+        return engineRoll(gameState);
+    },
 
     /**
      * Crisis categories and their templates.
@@ -4791,18 +5044,18 @@ window.Game.Engine.Crisis = {
      */
     generateCrisis(gameState, chance = 0.70) {
         // Default: 70% chance a crisis occurs each year
-        if (Math.random() > chance) return null;
+        if (this._roll(gameState) > chance) return null;
 
         // Pick a random crisis
         const templates = this.CRISIS_TEMPLATES;
-        let crisis = templates[Math.floor(Math.random() * templates.length)];
+        let crisis = templates[Math.floor(this._roll(gameState) * templates.length)];
 
         // Don't repeat the same crisis in consecutive years
         if (gameState._lastCrisisName === crisis.engName) {
             // Pick a different one
             const filtered = templates.filter(c => c.engName !== crisis.engName);
             if (filtered.length > 0) {
-                crisis = filtered[Math.floor(Math.random() * filtered.length)];
+                crisis = filtered[Math.floor(this._roll(gameState) * filtered.length)];
             }
         }
 
@@ -4825,7 +5078,7 @@ window.Game.Engine.Crisis = {
     resolveCrisis(gameState, crisis, optionIndex) {
         const option = crisis.options[optionIndex];
         const pp = gameState.parties.find(p => p.id === gameState.playerPartyId);
-        const roll = Math.random();
+        const roll = this._roll(gameState);
         const success = roll < option.successChance;
 
         const effects = success ? option.successEffects : option.failEffects;

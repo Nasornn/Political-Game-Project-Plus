@@ -19,14 +19,26 @@ window.Game.App = {
         STATE_PARLIAMENT_TERM: 'STATE_PARLIAMENT_TERM',
     },
 
+    VALID_STATE_TRANSITIONS: {
+        STATE_SETUP: ['STATE_SETUP', 'STATE_CAMPAIGN', 'STATE_ELECTION_CALC', 'STATE_COALITION', 'STATE_PARLIAMENT_TERM'],
+        STATE_CAMPAIGN: ['STATE_SETUP', 'STATE_CAMPAIGN', 'STATE_ELECTION_CALC', 'STATE_COALITION'],
+        STATE_ELECTION_CALC: ['STATE_SETUP', 'STATE_CAMPAIGN', 'STATE_ELECTION_CALC', 'STATE_COALITION', 'STATE_PARLIAMENT_TERM'],
+        STATE_COALITION: ['STATE_SETUP', 'STATE_CAMPAIGN', 'STATE_ELECTION_CALC', 'STATE_COALITION', 'STATE_PARLIAMENT_TERM'],
+        STATE_PARLIAMENT_TERM: ['STATE_SETUP', 'STATE_CAMPAIGN', 'STATE_ELECTION_CALC', 'STATE_COALITION', 'STATE_PARLIAMENT_TERM']
+    },
+
     currentState: null,
+    eventBus: null,
 
     // ─── INITIALIZE ──────────────────────────────────────────
     async init() {
         console.log('🏛️ Thailand Election Simulator — Initializing...');
+        const initialSeed = this._normalizeSeed(Date.now());
 
         // Build initial game state (lightweight — NO MP generation yet)
         this.state = {
+            randomSeed: initialSeed,
+            randomState: initialSeed,
             scenarioMode: 'realistic',
             difficultyMode: 'medium',
             customScenarioConfig: null,
@@ -94,6 +106,8 @@ window.Game.App = {
         };
 
         this._ensureStateDefaults(this.state);
+        this._bindStateRandom(this.state);
+        this._initEventBus();
         this._restorePersistedCustomScenario();
 
         // Initialize map (start loading TopoJSON in parallel)
@@ -112,6 +126,20 @@ window.Game.App = {
 
         this.logRunEvent('system', 'New run initialized.');
         this._installCheatConsole();
+    },
+
+    _initEventBus() {
+        if (this.eventBus) return this.eventBus;
+        const coreBus = window.Game && window.Game.Core && window.Game.Core.EventBus;
+        this.eventBus = coreBus && typeof coreBus.create === 'function'
+            ? coreBus.create()
+            : {
+                on: () => () => {},
+                emit: () => {},
+                getHistory: () => []
+            };
+        window.Game.Events = this.eventBus;
+        return this.eventBus;
     },
 
     _getMinistryPool() {
@@ -1421,7 +1449,7 @@ window.Game.App = {
         }
 
         const normalizedBill = {
-            id: String((bill && bill.id) || `bill_${Date.now()}_${Math.floor(Math.random() * 1e6).toString(36)}`).slice(0, 72),
+            id: String((bill && bill.id) || `bill_${Date.now()}_${Math.floor(this._roll() * 1e6).toString(36)}`).slice(0, 72),
             name: String((bill && bill.name) || 'Government Bill').trim().slice(0, 80),
             description: String((bill && bill.description) || '').trim().slice(0, 420),
             capitalCost: Math.max(0, Math.floor(Number((bill && bill.capitalCost) || 0))),
@@ -1686,6 +1714,8 @@ window.Game.App = {
     _ensureStateDefaults(state) {
         if (!state) return;
         this._ensureMultiplayerStateShape(state);
+        state.randomSeed = this._normalizeSeed(state.randomSeed || Date.now());
+        state.randomState = this._normalizeSeed(state.randomState || state.randomSeed);
         if (!Array.isArray(state.runHistory)) state.runHistory = [];
         if (!state.aiPersonality) state.aiPersonality = {};
         if (!state.aiAllianceMemory) state.aiAllianceMemory = {};
@@ -1727,8 +1757,40 @@ window.Game.App = {
         return round ? Math.round(bounded) : bounded;
     },
 
+    _normalizeSeed(seedValue = 1) {
+        if (window.Game && window.Game.Core && window.Game.Core.RNG && typeof window.Game.Core.RNG.normalizeSeed === 'function') {
+            return window.Game.Core.RNG.normalizeSeed(seedValue);
+        }
+        const n = Math.floor(Number(seedValue));
+        return ((Number.isFinite(n) ? n : 1) >>> 0) || 1;
+    },
+
+    _bindStateRandom(state) {
+        if (!state) return;
+        this._ensureStateDefaults(state);
+        state.random = () => {
+            if (window.Game && window.Game.Core && window.Game.Core.RNG) {
+                state.randomState = window.Game.Core.RNG.nextState(state.randomState);
+                return window.Game.Core.RNG.toFloat(state.randomState);
+            }
+            const fallback = this._createDeterministicRng(state.randomState || state.randomSeed || 1);
+            const value = fallback();
+            state.randomState = this._normalizeSeed(Math.floor(value * 4294967296));
+            return value;
+        };
+    },
+
+    _roll() {
+        if (this.state && typeof this.state.random === 'function') return this.state.random();
+        return Math.random();
+    },
+
     _createDeterministicRng(seedValue = 1) {
-        let t = (Math.floor(Number(seedValue) || 1) >>> 0) || 1;
+        const coreRng = window.Game && window.Game.Core && window.Game.Core.RNG;
+        if (coreRng && typeof coreRng.create === 'function') {
+            return coreRng.create(seedValue);
+        }
+        let t = this._normalizeSeed(seedValue);
         return () => {
             t = (t + 0x6D2B79F5) >>> 0;
             let r = Math.imul(t ^ (t >>> 15), 1 | t);
@@ -2264,12 +2326,20 @@ window.Game.App = {
     },
 
     _snapshotState() {
-        return JSON.parse(JSON.stringify(this.state));
+        const snapshot = JSON.parse(JSON.stringify(this.state));
+        if (window.Game && window.Game.Models && typeof window.Game.Models.getCounters === 'function') {
+            snapshot._modelCounters = window.Game.Models.getCounters();
+        }
+        return snapshot;
     },
 
     _hydrateLoadedState(rawState) {
         const state = JSON.parse(JSON.stringify(rawState || {}));
         this._ensureStateDefaults(state);
+
+        if (window.Game && window.Game.Models && typeof window.Game.Models.setCounters === 'function') {
+            window.Game.Models.setCounters(state._modelCounters || {});
+        }
 
         if (Array.isArray(state.districts)) {
             state.districts = state.districts.map(d => {
@@ -2322,6 +2392,31 @@ window.Game.App = {
             state.seatedMPs = [];
         }
 
+        const maxDistrictId = (state.districts || []).reduce((maxId, d) => {
+            const n = Number(d && d.id);
+            return Number.isFinite(n) ? Math.max(maxId, Math.floor(n)) : maxId;
+        }, 0);
+        const maxMpId = Object.values(state.partyMPs || {}).reduce((maxId, list) => {
+            return Math.max(maxId, (list || []).reduce((innerMax, mp) => {
+                const n = Number(mp && mp.id);
+                return Number.isFinite(n) ? Math.max(innerMax, Math.floor(n)) : innerMax;
+            }, 0));
+        }, 0);
+        const maxBillId = (state.governmentBillQueue || []).reduce((maxId, bill) => {
+            const n = Number(bill && bill.id);
+            return Number.isFinite(n) ? Math.max(maxId, Math.floor(n)) : maxId;
+        }, 0);
+
+        if (window.Game && window.Game.Models && typeof window.Game.Models.syncCounters === 'function') {
+            window.Game.Models.syncCounters({
+                mp: maxMpId,
+                district: maxDistrictId,
+                bill: maxBillId
+            });
+        }
+
+        this._bindStateRandom(state);
+
         return state;
     },
 
@@ -2337,7 +2432,7 @@ window.Game.App = {
 
         const playerParty = (this.state.parties || []).find(p => p.id === this.state.playerPartyId);
         const payload = {
-            version: 2,
+            version: 3,
             savedAt: Date.now(),
             currentState: this.currentState || this.STATES.STATE_SETUP,
             meta: {
@@ -2558,7 +2653,7 @@ window.Game.App = {
                     region
                 });
                 for (const party of parties) {
-                    d.localLeanings[party.id] = Math.floor(Math.random() * 10 - 5);
+                    d.localLeanings[party.id] = Math.floor(this._roll() * 10 - 5);
                 }
                 districts.push(d);
             }
@@ -2581,10 +2676,11 @@ window.Game.App = {
                 mps.push(new window.Game.Models.MP({
                     name: allNames[i] || window.Game.Data.generateName(),
                     partyId: party.id,
-                    ideology: party.ideology + Math.floor(Math.random() * 20 - 10),
+                    ideology: party.ideology + Math.floor(this._roll() * 20 - 10),
                     districtId: district.id,
                     isPartyList: false,
-                    localPopularity: Math.floor(Math.random() * 30)
+                    localPopularity: Math.floor(this._roll() * 30),
+                    rollFn: () => this._roll()
                 }));
             }
 
@@ -2592,9 +2688,10 @@ window.Game.App = {
                 mps.push(new window.Game.Models.MP({
                     name: allNames[i] || window.Game.Data.generateName(),
                     partyId: party.id,
-                    ideology: party.ideology + Math.floor(Math.random() * 15 - 7),
+                    ideology: party.ideology + Math.floor(this._roll() * 15 - 7),
                     isPartyList: true,
-                    localPopularity: 0
+                    localPopularity: 0,
+                    rollFn: () => this._roll()
                 }));
             }
 
@@ -2707,10 +2804,28 @@ window.Game.App = {
     },
 
     // ─── STATE TRANSITIONS ───────────────────────────────────
-    transition(newState) {
-        console.log(`⚙️ State: ${this.currentState} → ${newState}`);
+    transition(newState, options = {}) {
+        const previousState = this.currentState;
+        const force = !!(options && options.force);
+        const sm = window.Game && window.Game.Core && window.Game.Core.StateMachine;
+        const canTransition = force || !(sm && typeof sm.canTransition === 'function')
+            ? true
+            : sm.canTransition(previousState, newState, this.VALID_STATE_TRANSITIONS);
+
+        if (!canTransition) {
+            console.warn(`Blocked invalid transition: ${previousState} → ${newState}`);
+            if (window.Game && window.Game.UI && window.Game.UI.Screens) {
+                window.Game.UI.Screens.showNotification(`Invalid transition: ${previousState || 'null'} → ${newState}`, 'error');
+            }
+            return false;
+        }
+
+        console.log(`⚙️ State: ${previousState} → ${newState}`);
         this.currentState = newState;
         this.logRunEvent('state', `Transitioned to ${newState}.`);
+        if (this.eventBus && typeof this.eventBus.emit === 'function') {
+            this.eventBus.emit('state.transition', { from: previousState || null, to: newState, at: Date.now() });
+        }
 
         switch (newState) {
             case this.STATES.STATE_SETUP:
@@ -2861,6 +2976,7 @@ window.Game.App = {
                 }
                 break;
         }
+            return true;
     },
 
     // ─── ADD CUSTOM PARTY ────────────────────────────────────
@@ -3286,7 +3402,7 @@ window.Game.App = {
             if (p.id === formateurId) continue;
             const ideologyDistance = Math.abs((formateur?.ideology || 50) - (p.ideology || 50));
             const memoryWithFormateur = this._getAllianceMemoryScore(p.id, formateurId);
-            const trustBase = 70 - (ideologyDistance * 0.48) + (memoryWithFormateur * 0.28) + Math.floor(Math.random() * 14 - 7);
+            const trustBase = 70 - (ideologyDistance * 0.48) + (memoryWithFormateur * 0.28) + Math.floor(this._roll() * 14 - 7);
             const trust = Math.max(22, Math.min(88, Math.round(trustBase)));
 
             const redLineCandidate = [...all]
@@ -3415,7 +3531,7 @@ window.Game.App = {
 
         const breakdown = this._getInviteBreakdown(formateurId, inviteeId, this.state.coalitionPartyIds);
         const chance = breakdown.chance;
-        const accepted = Math.random() < chance;
+        const accepted = this._roll() < chance;
         const party = this.state.parties.find(p => p.id === inviteeId);
         const name = party ? party.thaiName : inviteeId;
 
@@ -3634,14 +3750,14 @@ window.Game.App = {
 
             const demand = this.state.coalitionDemands[p.id];
             const minimumOffer = demand ? demand.ministryDemand : 1;
-            const aiOffer = Math.max(1, Math.min(6, minimumOffer + (Math.random() < 0.35 ? 1 : 0)));
+            const aiOffer = Math.max(1, Math.min(6, minimumOffer + (this._roll() < 0.35 ? 1 : 0)));
             if (ministriesRemaining < minimumOffer) continue;
             offerPlan[p.id] = aiOffer;
             ministriesRemaining -= aiOffer;
             this.state.coalitionMinistryOffers[p.id] = aiOffer;
 
             const chance = this._inviteAcceptanceChance(formateurId, p.id, proposed);
-            const wantsInvite = Math.random() < chance;
+            const wantsInvite = this._roll() < chance;
             if (!wantsInvite) {
                 if (chance >= 0.5) {
                     this._adjustAllianceMemory(p.id, formateurId, -1, 'AI coalition outreach failed.');
@@ -3700,7 +3816,7 @@ window.Game.App = {
             }
             this.state.coalitionMinistryOffers[pid] = ministryOffers[pid] || this.state.coalitionMinistryOffers[pid] || 0;
             const chance = this._inviteAcceptanceChance(formateurId, pid, proposed);
-            const accepted = Math.random() < chance;
+            const accepted = this._roll() < chance;
             if (accepted) proposed.push(pid);
         }
 
@@ -3793,7 +3909,7 @@ window.Game.App = {
             }
             // Small loyalty drift
             mp.loyaltyToParty = Math.max(10, Math.min(95,
-                mp.loyaltyToParty + Math.floor(Math.random() * 10 - 5)
+                mp.loyaltyToParty + Math.floor(this._roll() * 10 - 5)
             ));
         }
 
@@ -4009,7 +4125,7 @@ window.Game.App = {
                 mp.isBribedByPlayer = false;
             }
             mp.loyaltyToParty = Math.max(10, Math.min(95,
-                mp.loyaltyToParty + Math.floor(Math.random() * 10 - 5)
+                mp.loyaltyToParty + Math.floor(this._roll() * 10 - 5)
             ));
         }
 
@@ -4130,63 +4246,16 @@ window.Game.App = {
     },
 
     resolveCoalitionEventChoice(partyId, event, optionIndex) {
-        const option = event.options[optionIndex];
-        if (!option) return;
-        const effect = option.effect;
-        const playerParty = (this.state.parties || []).find(p => p.id === this.state.playerPartyId);
-        const sat = (this.state.coalitionSatisfaction || {})[partyId];
+        const result = window.Game.Engine.Parliament.resolveCoalitionEvent(this.state, partyId, event, optionIndex);
+        if (!result || result.applied === false) {
+            const msg = (result && result.msg) ? result.msg : 'Unable to resolve coalition event.';
+            window.Game.UI.Screens.showNotification(msg, 'error');
+            return;
+        }
 
-        if (effect.partnerSatisfaction && sat) {
-            sat.score = Math.max(5, Math.min(95, sat.score + effect.partnerSatisfaction));
-        }
-        if (effect.capital && playerParty) {
-            playerParty.politicalCapital = Math.max(0, playerParty.politicalCapital + effect.capital);
-        }
-        if (effect.scandal && playerParty) {
-            playerParty.scandalMeter = Math.max(0, Math.min(100, playerParty.scandalMeter + effect.scandal));
-        }
-        if (effect.popularity && playerParty) {
-            window.Game.Engine.Parliament.applyPopularityImpact(
-                this.state,
-                playerParty.id,
-                { national: effect.popularity },
-                {
-                    sourceKey: `coalition_event_${event.id || 'generic'}_${this.state.sessionNumber || 1}`,
-                    skill: 0.56,
-                    nationalMaxDelta: 1,
-                    annualGainBudget: 3.2,
-                    annualLossBudget: 5,
-                    useNoise: false
-                }
-            );
-        }
-        // Risk walkout on bluff-calling
-        if (effect.riskWalkout && sat && sat.score < 20 && Math.random() < 0.4) {
-            const coalitionIds = [...(this.state.coalitionPartyIds || [])];
-            this.state.coalitionPartyIds = coalitionIds.filter(id => id !== partyId);
-            delete this.state.coalitionSatisfaction[partyId];
-
-            const cabinet = this.state.cabinetPortfolioState;
-            if (cabinet && cabinet.assignments) {
-                let vacated = 0;
-                for (const ministry of (window.Game.Engine.Parliament.CABINET_GRADE_A_MINISTRIES || [])) {
-                    if (cabinet.assignments[ministry] === partyId) {
-                        cabinet.assignments[ministry] = null;
-                        vacated++;
-                    }
-                }
-                if (vacated > 0) {
-                    cabinet.finalized = false;
-                    cabinet.finalizedSession = null;
-                }
-            }
-
+        if (result.walkoutTriggered) {
             const partyName = (this.state.parties || []).find(p => p.id === partyId)?.thaiName || partyId;
             window.Game.UI.Screens.showNotification(`💥 ${partyName} has left the coalition!`, 'error');
-        }
-
-        if (typeof window.Game.Engine.Parliament.recordCoalitionSatisfactionSnapshot === 'function') {
-            window.Game.Engine.Parliament.recordCoalitionSatisfactionSnapshot(this.state);
         }
 
         // Remove processed event
@@ -4275,10 +4344,10 @@ window.Game.App = {
 
         if (!forceSpawn) {
             if (this.state.campaignTurn < 3) return false;
-            if (Math.random() > window.Game.Engine.Campaign.getEmergentPartyChance(this.state)) return false;
+            if (this._roll() > window.Game.Engine.Campaign.getEmergentPartyChance(this.state)) return false;
         }
 
-        const seed = Math.max(1, Math.floor(Number(options.seed) || Math.floor(Math.random() * 2147483647)));
+        const seed = Math.max(1, Math.floor(Number(options.seed) || Math.floor(this._roll() * 2147483647)));
         const roll = forceSpawn ? this._createDeterministicRng(seed) : Math.random;
 
         const provinceEntries = Object.entries(window.Game.Data.PROVINCES || {});
@@ -4469,7 +4538,7 @@ window.Game.App = {
 
                 // Randomize local leanings for each party
                 for (const party of this.state.parties) {
-                    d.localLeanings[party.id] = Math.floor(Math.random() * 10 - 5);
+                    d.localLeanings[party.id] = Math.floor(this._roll() * 10 - 5);
                 }
 
                 districts.push(d);
@@ -4499,10 +4568,11 @@ window.Game.App = {
             mps.push(new window.Game.Models.MP({
                 name: allNames[i] || window.Game.Data.generateName(),
                 partyId: party.id,
-                ideology: party.ideology + Math.floor(Math.random() * 20 - 10),
+                ideology: party.ideology + Math.floor(this._roll() * 20 - 10),
                 districtId: district.id,
                 isPartyList: false,
-                localPopularity: Math.floor(Math.random() * 30)
+                localPopularity: Math.floor(this._roll() * 30),
+                rollFn: () => this._roll()
             }));
         }
 
@@ -4511,9 +4581,10 @@ window.Game.App = {
             mps.push(new window.Game.Models.MP({
                 name: allNames[i] || window.Game.Data.generateName(),
                 partyId: party.id,
-                ideology: party.ideology + Math.floor(Math.random() * 15 - 7),
+                ideology: party.ideology + Math.floor(this._roll() * 15 - 7),
                 isPartyList: true,
-                localPopularity: 0
+                localPopularity: 0,
+                rollFn: () => this._roll()
             }));
         }
 

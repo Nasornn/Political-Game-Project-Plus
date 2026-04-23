@@ -88,6 +88,11 @@
     <script src="data/parties.js"></script>
     <script src="data/names.js"></script>
 
+    <!-- Core Utilities -->
+    <script src="core/rng.js"></script>
+    <script src="core/event-bus.js"></script>
+    <script src="core/state-machine.js"></script>
+
     <!-- Models & Engine -->
     <script src="models.js"></script>
     <script src="engine.js"></script>
@@ -113,21 +118,35 @@
     <!-- Boot -->
     <script>
         document.getElementById('btn-start-game').addEventListener('click', function() {
-            this.disabled = true;
-            this.textContent = '⏳ Loading...';
-            // Game init is triggered by DOMContentLoaded in app.js
-            // Just transition to setup
-            if (window.Game && window.Game.App && window.Game.App.state) {
+            const startButton = this;
+            startButton.disabled = true;
+            startButton.textContent = '⏳ Loading...';
+
+            const launchSetup = () => {
+                if (!(window.Game && window.Game.App && window.Game.App.state)) return false;
                 window.Game.App.transition('STATE_SETUP');
-            } else {
-                // Wait for init
-                const check = setInterval(() => {
-                    if (window.Game && window.Game.App && window.Game.App.state) {
-                        clearInterval(check);
-                        window.Game.App.transition('STATE_SETUP');
-                    }
-                }, 100);
-            }
+                return true;
+            };
+
+            if (launchSetup()) return;
+
+            // Game init is triggered by DOMContentLoaded in app.js.
+            // Wait with timeout so the button can recover if scripts fail.
+            const startedAt = Date.now();
+            const timeoutMs = 10000;
+            const check = setInterval(() => {
+                if (launchSetup()) {
+                    clearInterval(check);
+                    return;
+                }
+
+                if ((Date.now() - startedAt) >= timeoutMs) {
+                    clearInterval(check);
+                    startButton.disabled = false;
+                    startButton.textContent = '❌ Load failed — Retry';
+                    console.error('Game boot timed out: app state was not ready within 10 seconds.');
+                }
+            }, 100);
         });
     </script>
 

@@ -3043,10 +3043,14 @@ window.Game.UI.Screens = {
                         ? swing
                         : provinceDistricts[Math.floor(Math.random() * provinceDistricts.length)];
 
-                    const msg = action.execute(gameState, { districtId: targetDistrict.id });
+                    const result = this._normalizeCampaignActionResult(action.execute(gameState, { districtId: targetDistrict.id }));
+                    if (!result.success) {
+                        this.showNotification(result.message, 'error');
+                        return;
+                    }
                     gameState.actionPoints -= action.apCost;
                     notifyServerAction(actionKey, { provinceName, districtId: targetDistrict.id });
-                    this.showNotification(`${msg} (${provinceName} seat ${targetDistrict.seatIndex})`, 'success');
+                    this.showNotification(`${result.message} (${provinceName} seat ${targetDistrict.seatIndex})`, 'success');
                     modal.classList.add('hidden');
                     this.renderCampaign(gameState);
                     return;
@@ -3055,24 +3059,50 @@ window.Game.UI.Screens = {
                 // For attack ad, need to pick a target party
                 if (actionKey === 'attackAd' || actionKey === 'ioOperation') {
                     this._showTargetPartyPicker(gameState, (targetPartyId) => {
-                        const msg = action.execute(gameState, { provinceName, targetPartyId });
+                        const result = this._normalizeCampaignActionResult(action.execute(gameState, { provinceName, targetPartyId }));
+                        if (!result.success) {
+                            this.showNotification(result.message, 'error');
+                            return;
+                        }
                         gameState.actionPoints -= action.apCost;
                         notifyServerAction(actionKey, { provinceName, targetPartyId });
-                        this.showNotification(msg, 'success');
+                        this.showNotification(result.message, 'success');
                         modal.classList.add('hidden');
                         this.renderCampaign(gameState);
                     });
                     return;
                 }
 
-                const msg = action.execute(gameState, { provinceName });
+                const result = this._normalizeCampaignActionResult(action.execute(gameState, { provinceName }));
+                if (!result.success) {
+                    this.showNotification(result.message, 'error');
+                    return;
+                }
                 gameState.actionPoints -= action.apCost;
                 notifyServerAction(actionKey, { provinceName });
-                this.showNotification(msg, 'success');
+                this.showNotification(result.message, 'success');
                 modal.classList.add('hidden');
                 this.renderCampaign(gameState);
             });
         });
+    },
+
+    _normalizeCampaignActionResult(rawResult) {
+        if (rawResult && typeof rawResult === 'object') {
+            const success = rawResult.success !== false;
+            const message = rawResult.message || rawResult.msg || (success ? 'Action completed.' : 'Action failed.');
+            return {
+                success,
+                message,
+                effects: rawResult.effects || {}
+            };
+        }
+
+        if (typeof rawResult === 'string') {
+            return { success: true, message: rawResult, effects: {} };
+        }
+
+        return { success: false, message: 'Action failed.', effects: {} };
     },
 
     _showActionTargeting(actionKey, action, gameState) {
@@ -3087,12 +3117,16 @@ window.Game.UI.Screens = {
             this.showNotification("Click a province on the map to target.", 'info');
             window.Game.UI.Map._mapGroup.selectAll('path.province').classed('targetable', true);
         } else if (actionKey === 'fundraise') {
-            const msg = action.execute(gameState);
+            const result = this._normalizeCampaignActionResult(action.execute(gameState));
+            if (!result.success) {
+                this.showNotification(result.message, 'error');
+                return;
+            }
             gameState.actionPoints -= action.apCost;
             if (app && app.isMultiplayerActive && app.isMultiplayerActive() && window.Game.Multiplayer) {
                 window.Game.Multiplayer.reportCampaignAction(actionKey, {});
             }
-            this.showNotification(msg, 'success');
+            this.showNotification(result.message, 'success');
             this.renderCampaign(gameState);
         } else if (actionKey === 'canvass') {
             this.showNotification("Click a province on the map to canvass.", 'info');
@@ -3161,12 +3195,16 @@ window.Game.UI.Screens = {
                     return;
                 }
 
-                const msg = action.execute(gameState, { promise });
+                const result = this._normalizeCampaignActionResult(action.execute(gameState, { promise }));
+                if (!result.success) {
+                    this.showNotification(result.message, 'error');
+                    return;
+                }
                 gameState.actionPoints -= action.apCost;
                 if (app && app.isMultiplayerActive && app.isMultiplayerActive() && window.Game.Multiplayer) {
                     window.Game.Multiplayer.reportCampaignAction('promisePolicy', { promiseId: promise.promiseId });
                 }
-                this.showNotification(msg, 'success');
+                this.showNotification(result.message, 'success');
                 modal.classList.add('hidden');
                 this.renderCampaign(gameState);
             });
